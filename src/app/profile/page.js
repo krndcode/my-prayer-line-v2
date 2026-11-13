@@ -57,6 +57,7 @@ import {
 import { auth, db } from "@/lib/firebase";
 import AppShell from "@/components/AppShell";
 import { applyTheme } from "@/lib/theme";
+import { playNotificationSound, setSoundEnabled } from "@/lib/sound";
 
 const defaultProfile = {
   name: "",
@@ -85,6 +86,7 @@ const defaultPreferences = {
   language: "English",
   theme: "light",
   reminderFrequency: "daily",
+  soundAlerts: true,
 };
 
 // A report is considered closed once an administrator resolves or dismisses it.
@@ -547,6 +549,15 @@ export default function ProfilePage() {
       if (field === "preferences") setPreferences(values);
       if (field === "preferences") {
         applyTheme(values.theme || defaultPreferences.theme, true);
+
+        const wasEnabled = preferences.soundAlerts !== false;
+        const isEnabled = values.soundAlerts !== false;
+
+        setSoundEnabled(isEnabled);
+
+        if (!wasEnabled && isEnabled) {
+          playNotificationSound();
+        }
       }
 
       showNotice(successMessage);
@@ -1676,6 +1687,18 @@ function SettingsModal({
         Your appearance choice is applied throughout the app as soon as you
         save. System mode follows your device appearance setting.
       </p>
+
+      <ToggleRow
+        title="Notification sounds"
+        description="Play a chime for new notifications and ring when someone starts a group call."
+        checked={preferenceForm.soundAlerts !== false}
+        onChange={(value) =>
+          setPreferenceForm((current) => ({
+            ...current,
+            soundAlerts: value,
+          }))
+        }
+      />
 
       <SaveButton
         saving={saving}

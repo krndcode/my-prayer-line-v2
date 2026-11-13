@@ -86,6 +86,8 @@ export default function GroupCall({ groupId, groupName, user, canJoin }) {
   const connections = useRef(new Map());
   const candidateListeners = useRef(new Map());
   const pendingOffers = useRef(new Set());
+  const autoJoinedCallRef = useRef("");
+  const joinCallRef = useRef(null);
 
   useEffect(() => {
     if (!callId) return undefined;
@@ -113,6 +115,24 @@ export default function GroupCall({ groupId, groupName, user, canJoin }) {
       }
     );
   }, [groupId, canJoin]);
+
+  // The global incoming-call banner links to
+  // /prayer-space/{groupId}?joinCall={callId}. When that call is the active
+  // one, join it automatically instead of making the user press Join again.
+  useEffect(() => {
+    if (!canJoin || !user || !activeCall || callId || working) return;
+    if (typeof window === "undefined") return;
+
+    const requestedCallId = new URLSearchParams(window.location.search).get(
+      "joinCall"
+    );
+
+    if (!requestedCallId || requestedCallId !== activeCall.id) return;
+    if (autoJoinedCallRef.current === requestedCallId) return;
+
+    autoJoinedCallRef.current = requestedCallId;
+    joinCallRef.current?.();
+  }, [canJoin, user, activeCall, callId, working]);
 
   useEffect(() => {
     if (!callId || !localStream || !user) return undefined;
@@ -426,6 +446,12 @@ export default function GroupCall({ groupId, groupName, user, canJoin }) {
       setWorking(false);
     }
   }
+
+  // Keep the auto-join effect pointed at the latest closure without making it
+  // a dependency (which would re-run on every render).
+  useEffect(() => {
+    joinCallRef.current = joinCall;
+  });
 
   async function enableCamera() {
     if (!localStream) return;
