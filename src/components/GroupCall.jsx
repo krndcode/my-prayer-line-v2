@@ -56,6 +56,18 @@ function clearActiveCallMark() {
   }
 }
 
+// Set before the call document is created so the creating tab never rings for
+// its own call, even if Firestore delivers the new document instantly.
+function markCallPending(groupId) {
+  if (typeof window === "undefined") return;
+
+  try {
+    window.sessionStorage.setItem(ACTIVE_CALL_KEY, `${groupId}:pending`);
+  } catch {
+    // Session storage can be unavailable in private mode.
+  }
+}
+
 function MediaTile({ stream, label, muted = false, audioOnly = false }) {
   const videoRef = useRef(null);
   const audioRef = useRef(null);
@@ -416,6 +428,7 @@ export default function GroupCall({ groupId, groupName, user, canJoin }) {
 
   async function startCall(type) {
     if (!user || working) return;
+    markCallPending(groupId);
     setWorking(true);
     setError("");
     let stream;
@@ -446,6 +459,7 @@ export default function GroupCall({ groupId, groupName, user, canJoin }) {
       }
     } catch (callError) {
       stream?.getTracks().forEach((track) => track.stop());
+      clearActiveCallMark();
       if (callRef) {
         try {
           await updateDoc(callRef, {

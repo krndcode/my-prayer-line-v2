@@ -43,9 +43,9 @@ function isLocallyActiveCall(groupId, callId) {
   if (typeof window === "undefined") return false;
 
   try {
-    return (
-      window.sessionStorage.getItem(ACTIVE_CALL_KEY) === `${groupId}:${callId}`
-    );
+    const value = window.sessionStorage.getItem(ACTIVE_CALL_KEY);
+
+    return value === `${groupId}:${callId}` || value === `${groupId}:pending`;
   } catch {
     return false;
   }
