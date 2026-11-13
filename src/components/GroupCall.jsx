@@ -21,6 +21,7 @@ import {
   VideoOff,
 } from "lucide-react";
 import { db } from "@/lib/firebase";
+import { stopRingtone } from "@/lib/sound";
 
 const rtcConfiguration = {
   iceServers: [{ urls: "stun:stun.l.google.com:19302" }],
@@ -31,6 +32,17 @@ const rtcConfiguration = {
 // (for example a phone) still ring.
 const ACTIVE_CALL_KEY = "mpl-active-call";
 
+function notifyActiveCall(groupId, callId) {
+  if (typeof window === "undefined") return;
+
+  // Tell the global banner this tab has accepted the call. Firing this the
+  // moment Join is pressed silences the ringtone immediately, even while the
+  // browser is still asking for microphone/camera permission.
+  window.dispatchEvent(
+    new CustomEvent("mpl:active-call", { detail: { groupId, callId } })
+  );
+}
+
 function markActiveCall(groupId, callId) {
   if (typeof window === "undefined") return;
 
@@ -40,10 +52,28 @@ function markActiveCall(groupId, callId) {
     // Session storage can be unavailable in private mode.
   }
 
-  // Let the global banner know this tab is now in the call.
-  window.dispatchEvent(
-    new CustomEvent("mpl:active-call", { detail: { groupId, callId } })
-  );
+  notifyActiveCall(groupId, callId);
+}
+
+// The banner opens the group as /prayer-space/{groupId}?joinCall={callId}.
+// Remove that marker once the call is joined or left so a later render cannot
+// auto-rejoin the same call on its own.
+function clearJoinCallParam() {
+  if (typeof window === "undefined") return;
+
+  try {
+    const url = new URL(window.location.href);
+    if (!url.searchParams.has("joinCall")) return;
+
+    url.searchParams.delete("joinCall");
+    window.history.replaceState(
+      window.history.state,
+      "",
+      `${url.pathname}${url.search}${url.hash}`
+    );
+  } catch {
+    // Ignore browsers that block history updates.
+  }
 }
 
 function clearActiveCallMark() {
@@ -128,6 +158,7 @@ export default function GroupCall({ groupId, groupName, user, canJoin }) {
   const connections = useRef(new Map());
   const candidateListeners = useRef(new Map());
   const pendingOffers = useRef(new Set());
+  const connectionPeers = useRef(new Map());
   const autoJoinedCallRef = useRef("");
   const joinCallRef = useRef(null);
 
@@ -202,10 +233,43 @@ export default function GroupCall({ groupId, groupName, user, canJoin }) {
     const activeConnections = connections.current;
     const activeCandidateListeners = candidateListeners.current;
     const activePendingOffers = pendingOffers.current;
+    const activeConnectionPeers = connectionPeers.current;
     const participantNames = new Map();
+    let sessionStartMillis = 0;
     const callRef = doc(db, "prayerGroups", groupId, "calls", callId);
     const participantsRef = collection(callRef, "participants");
     const signalsRef = collection(callRef, "signals");
+
+    function closeSignal(signalId) {
+      const pc = connections.current.get(signalId);
+
+      if (pc) {
+        try {
+          pc.close();
+        } catch {
+          // The connection may already be closed.
+        }
+        connections.current.delete(signalId);
+      }
+
+      const remoteUid = connectionPeers.current.get(signalId);
+
+      if (remoteUid) {
+        connectionPeers.current.delete(signalId);
+
+        // Re-enable offers to this peer so a rejoin can negotiate again.
+        if (![...connectionPeers.current.values()].includes(remoteUid)) {
+          pendingOffers.current.delete(remoteUid);
+        }
+      }
+
+      candidateListeners.current.forEach((unsubscribe, key) => {
+        if (key.startsWith(`${signalId}:`)) {
+          unsubscribe();
+          candidateListeners.current.delete(key);
+        }
+      });
+    }
 
     function addCandidates(signalId, collectionName, pc) {
       const candidatesRef = collection(signalsRef, signalId, collectionName);
@@ -227,6 +291,7 @@ export default function GroupCall({ groupId, groupName, user, canJoin }) {
     function createConnection(signalId, remoteUid, isOfferer) {
       const pc = new RTCPeerConnection(rtcConfiguration);
       connections.current.set(signalId, pc);
+      connectionPeers.current.set(signalId, remoteUid);
       localStream.getAudioTracks().forEach((track) => pc.addTrack(track, localStream));
       const localVideoTrack = localStream.getVideoTracks()[0];
       pc.addTransceiver(localVideoTrack || "video", { direction: "sendrecv" });
@@ -282,15 +347,34 @@ export default function GroupCall({ groupId, groupName, user, canJoin }) {
       );
       participantNameById.forEach((name, uid) => participantNames.set(uid, name));
 
+      const ownJoinedAt = ownParticipant?.data().joinedAt;
+      sessionStartMillis = ownJoinedAt?.toMillis?.() || sessionStartMillis;
+
+      // Close peer connections for members who already left. Without this a
+      // rejoin keeps reusing a dead peer connection, so the video/audio never
+      // comes back even though the call UI shows the participant.
+      [...connectionPeers.current.entries()].forEach(([signalId, remoteUid]) => {
+        if (!ids.includes(remoteUid)) closeSignal(signalId);
+      });
+
       if (ownParticipant) {
         ids.forEach((remoteUid) => {
           if (remoteUid === user.uid || user.uid.localeCompare(remoteUid) <= 0) return;
-          const signalId = `${user.uid}_${remoteUid}`;
-          if (connections.current.has(signalId) || pendingOffers.current.has(signalId)) return;
-          pendingOffers.current.add(signalId);
+
+          const alreadyConnected = [...connectionPeers.current.values()].includes(
+            remoteUid
+          );
+
+          if (alreadyConnected || pendingOffers.current.has(remoteUid)) return;
+          pendingOffers.current.add(remoteUid);
 
           (async () => {
             try {
+              // A fresh signal document per offer means a rejoin never reuses
+              // the previous session's offer/answer documents.
+              const signalId = `${user.uid}_${remoteUid}_${Date.now().toString(
+                36
+              )}${Math.random().toString(36).slice(2, 8)}`;
               const signalRef = doc(signalsRef, signalId);
               await setDoc(signalRef, {
                 fromUid: user.uid,
@@ -306,7 +390,7 @@ export default function GroupCall({ groupId, groupName, user, canJoin }) {
             } catch (offerError) {
               console.error("Creating group call offer failed:", offerError);
               setError("Unable to connect to a group member.");
-              pendingOffers.current.delete(signalId);
+              pendingOffers.current.delete(remoteUid);
             }
           })();
         });
@@ -331,6 +415,20 @@ export default function GroupCall({ groupId, groupName, user, canJoin }) {
         const pc = connections.current.get(signalId);
 
         if (signal.toUid === user.uid && signal.offer && !pc) {
+          const offerCreatedAt = signal.createdAt?.toMillis?.() || 0;
+
+          // Ignore offers left over from a previous join to this call.
+          if (offerCreatedAt && offerCreatedAt < sessionStartMillis) return;
+
+          // Drop any stale connection we still hold for this peer.
+          [...connectionPeers.current.entries()].forEach(
+            ([existingId, remoteUid]) => {
+              if (remoteUid === signal.fromUid && existingId !== signalId) {
+                closeSignal(existingId);
+              }
+            }
+          );
+
           const responder = createConnection(signalId, signal.fromUid, false);
           connections.current.set(signalId, responder);
 
@@ -369,6 +467,7 @@ export default function GroupCall({ groupId, groupName, user, canJoin }) {
     const unsubscribeCall = onSnapshot(callRef, (snapshot) => {
       if (!active) return;
       if (!snapshot.exists() || snapshot.data().status !== "active") {
+        autoJoinedCallRef.current = "";
         setCallId("");
         setLocalStream(null);
         clearActiveCallMark();
@@ -394,6 +493,7 @@ export default function GroupCall({ groupId, groupName, user, canJoin }) {
       activeCandidateListeners.clear();
       activeConnections.forEach((pc) => pc.close());
       activeConnections.clear();
+      activeConnectionPeers.clear();
       activePendingOffers.clear();
       setRemoteStreams([]);
     };
@@ -428,7 +528,11 @@ export default function GroupCall({ groupId, groupName, user, canJoin }) {
 
   async function startCall(type) {
     if (!user || working) return;
+    // Starting a call is an accept gesture: make sure any other ringtone
+    // still playing in this tab stops right away.
+    stopRingtone();
     markCallPending(groupId);
+    notifyActiveCall(groupId, "pending");
     setWorking(true);
     setError("");
     let stream;
@@ -450,6 +554,7 @@ export default function GroupCall({ groupId, groupName, user, canJoin }) {
       });
       setCallType(type);
       setCameraOff(media.cameraUnavailable);
+      setMuted(false);
       setLocalStream(stream);
       setElapsedSeconds(0);
       setCallId(callRef.id);
@@ -481,6 +586,10 @@ export default function GroupCall({ groupId, groupName, user, canJoin }) {
 
   async function joinCall() {
     if (!user || !activeCall || working) return;
+    // Accepting a call must silence the ringtone immediately, before the
+    // permission prompt and Firestore writes finish.
+    stopRingtone();
+    notifyActiveCall(groupId, activeCall.id);
     setWorking(true);
     setError("");
     let stream;
@@ -495,10 +604,12 @@ export default function GroupCall({ groupId, groupName, user, canJoin }) {
       });
       setCallType(activeCall.type);
       setCameraOff(media.cameraUnavailable);
+      setMuted(false);
       setLocalStream(stream);
       setElapsedSeconds(0);
       setCallId(activeCall.id);
       markActiveCall(groupId, activeCall.id);
+      clearJoinCallParam();
       if (media.cameraUnavailable) {
         setError("Your camera could not start. You joined with your microphone; use the camera button to retry.");
       }
@@ -613,9 +724,16 @@ export default function GroupCall({ groupId, groupName, user, canJoin }) {
       return;
     }
     localStream?.getTracks().forEach((track) => track.stop());
+    // Clear the join link and auto-join marker before resetting the call state
+    // so the auto-join effect cannot immediately re-join the same call.
+    clearJoinCallParam();
+    autoJoinedCallRef.current = "";
+    setMuted(false);
+    setCameraOff(false);
     setLocalStream(null);
     setCallId("");
     clearActiveCallMark();
+    setRemoteStreams([]);
   }
 
   function toggleAudio() {

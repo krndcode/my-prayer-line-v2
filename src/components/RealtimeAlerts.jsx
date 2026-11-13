@@ -88,6 +88,7 @@ export default function RealtimeAlerts() {
   const lastPingRef = useRef(0);
   const firstNotificationsRef = useRef(true);
   const ringtoneStopRef = useRef(() => {});
+  const ringingParticipantUnsubRef = useRef(null);
 
   useEffect(() => {
     pathnameRef.current = pathname;
@@ -130,6 +131,11 @@ export default function RealtimeAlerts() {
   }, []);
 
   const clearIncomingCall = useCallback(() => {
+    if (ringingParticipantUnsubRef.current) {
+      ringingParticipantUnsubRef.current();
+      ringingParticipantUnsubRef.current = null;
+    }
+
     ringtoneStopRef.current?.();
     ringtoneStopRef.current = () => {};
     stopRingtone();
@@ -145,6 +151,12 @@ export default function RealtimeAlerts() {
       firstNotificationsRef.current = true;
       ringtoneStopRef.current?.();
       ringtoneStopRef.current = () => {};
+
+      if (ringingParticipantUnsubRef.current) {
+        ringingParticipantUnsubRef.current();
+        ringingParticipantUnsubRef.current = null;
+      }
+
       stopRingtone();
       incomingRef.current = null;
       setIncomingCall(null);
@@ -262,6 +274,22 @@ export default function RealtimeAlerts() {
       incomingRef.current = nextCall;
       setIncomingCall(nextCall);
       ringtoneStopRef.current = startRingtone();
+
+      // If this account joins the call on any device (or in another tab), the
+      // participant document appears and this tab should stop ringing too.
+      if (ringingParticipantUnsubRef.current) {
+        ringingParticipantUnsubRef.current();
+      }
+
+      ringingParticipantUnsubRef.current = onSnapshot(
+        doc(db, "prayerGroups", groupId, "calls", call.id, "participants", uid),
+        (participantSnapshot) => {
+          if (participantSnapshot.exists()) clearIncomingCall();
+        },
+        (error) => {
+          console.error("Call participant listener error:", error);
+        }
+      );
     }
 
     groups.slice(0, MAX_GROUP_LISTENERS).forEach((group) => {
@@ -314,20 +342,13 @@ export default function RealtimeAlerts() {
     };
   }, [uid, groups, clearIncomingCall]);
 
-  // If this tab starts or joins the ringing call, stop the banner and tone.
+  // If this tab starts or joins a call, stop the banner and tone. The user has
+  // accepted a call, so no ringtone should keep playing for any call.
   useEffect(() => {
     function handleActiveCall(event) {
-      const detail = event.detail;
-      const current = incomingRef.current;
+      if (!event.detail) return;
 
-      if (!detail || !current) return;
-
-      if (
-        detail.groupId === current.groupId &&
-        detail.callId === current.id
-      ) {
-        clearIncomingCall();
-      }
+      clearIncomingCall();
     }
 
     window.addEventListener("mpl:active-call", handleActiveCall);
@@ -335,7 +356,16 @@ export default function RealtimeAlerts() {
     return () => window.removeEventListener("mpl:active-call", handleActiveCall);
   }, [clearIncomingCall]);
 
-  useEffect(() => () => stopRingtone(), []);
+  useEffect(
+    () => () => {
+      if (ringingParticipantUnsubRef.current) {
+        ringingParticipantUnsubRef.current();
+        ringingParticipantUnsubRef.current = null;
+      }
+      stopRingtone();
+    },
+    []
+  );
 
   function handleJoin() {
     const current = incomingRef.current;
