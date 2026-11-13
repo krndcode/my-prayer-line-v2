@@ -2055,7 +2055,7 @@ function GroupRoomContent({ params }) {
                   value={message}
                   onChange={(event) => setMessage(event.target.value)}
                   maxLength={3000}
-                  placeholder={`Message ${group.name}`}
+                  placeholder="Message"
                   className="h-11 min-w-0 flex-1 bg-transparent px-1 text-[13px] text-[#111b21] outline-none placeholder:text-[#8696a0]"
                 />
               </div>
