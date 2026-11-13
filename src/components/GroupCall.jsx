@@ -26,6 +26,36 @@ const rtcConfiguration = {
   iceServers: [{ urls: "stun:stun.l.google.com:19302" }],
 };
 
+// The tab that starts or joins a call marks it here so the global incoming
+// call banner never rings that same tab. Other devices on the same account
+// (for example a phone) still ring.
+const ACTIVE_CALL_KEY = "mpl-active-call";
+
+function markActiveCall(groupId, callId) {
+  if (typeof window === "undefined") return;
+
+  try {
+    window.sessionStorage.setItem(ACTIVE_CALL_KEY, `${groupId}:${callId}`);
+  } catch {
+    // Session storage can be unavailable in private mode.
+  }
+
+  // Let the global banner know this tab is now in the call.
+  window.dispatchEvent(
+    new CustomEvent("mpl:active-call", { detail: { groupId, callId } })
+  );
+}
+
+function clearActiveCallMark() {
+  if (typeof window === "undefined") return;
+
+  try {
+    window.sessionStorage.removeItem(ACTIVE_CALL_KEY);
+  } catch {
+    // Session storage can be unavailable in private mode.
+  }
+}
+
 function MediaTile({ stream, label, muted = false, audioOnly = false }) {
   const videoRef = useRef(null);
   const audioRef = useRef(null);
@@ -133,6 +163,25 @@ export default function GroupCall({ groupId, groupName, user, canJoin }) {
     autoJoinedCallRef.current = requestedCallId;
     joinCallRef.current?.();
   }, [canJoin, user, activeCall, callId, working]);
+
+  // The banner dispatches this when the user presses Join while already on
+  // the group page (no navigation happens in that case).
+  useEffect(() => {
+    function handleJoinRequest(event) {
+      const detail = event.detail;
+
+      if (!detail || !activeCall || detail.callId !== activeCall.id) return;
+      if (callId || working) return;
+      if (autoJoinedCallRef.current === detail.callId) return;
+
+      autoJoinedCallRef.current = detail.callId;
+      joinCallRef.current?.();
+    }
+
+    window.addEventListener("mpl:join-call", handleJoinRequest);
+
+    return () => window.removeEventListener("mpl:join-call", handleJoinRequest);
+  }, [activeCall, callId, working]);
 
   useEffect(() => {
     if (!callId || !localStream || !user) return undefined;
@@ -310,6 +359,7 @@ export default function GroupCall({ groupId, groupName, user, canJoin }) {
       if (!snapshot.exists() || snapshot.data().status !== "active") {
         setCallId("");
         setLocalStream(null);
+        clearActiveCallMark();
         localStream.getTracks().forEach((track) => track.stop());
         return;
       }
@@ -390,6 +440,7 @@ export default function GroupCall({ groupId, groupName, user, canJoin }) {
       setLocalStream(stream);
       setElapsedSeconds(0);
       setCallId(callRef.id);
+      markActiveCall(groupId, callRef.id);
       if (media.cameraUnavailable) {
         setError("Your camera could not start. You joined with your microphone; use the camera button to retry.");
       }
@@ -433,6 +484,7 @@ export default function GroupCall({ groupId, groupName, user, canJoin }) {
       setLocalStream(stream);
       setElapsedSeconds(0);
       setCallId(activeCall.id);
+      markActiveCall(groupId, activeCall.id);
       if (media.cameraUnavailable) {
         setError("Your camera could not start. You joined with your microphone; use the camera button to retry.");
       }
@@ -549,6 +601,7 @@ export default function GroupCall({ groupId, groupName, user, canJoin }) {
     localStream?.getTracks().forEach((track) => track.stop());
     setLocalStream(null);
     setCallId("");
+    clearActiveCallMark();
   }
 
   function toggleAudio() {

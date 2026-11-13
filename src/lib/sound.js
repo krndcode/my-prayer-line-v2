@@ -1,32 +1,61 @@
 "use client";
 
-// Lightweight sound effects built with the Web Audio API.
+// Notification chime and group-call ringtone.
 //
-// No audio files are needed: the message ping and the call ringtone are
-// synthesised in the browser. Sounds stay off until the user interacts with
-// the page (browser autoplay rules), which is why `unlockAudio` is called on
-// the first click or key press.
+// Two engines are used:
+//   1. Pre-rendered WAV files played through <audio> elements. This is the
+//      most reliable path on mobile browsers (Android Chrome and iOS Safari).
+//   2. A Web Audio fallback if the files cannot be played.
+//
+// Browsers keep audio locked until the user interacts with the page, so
+// `unlockAudio` is called on every gesture. On iOS the audio session is also
+// switched to "playback" so the ringtone is heard even when the silent switch
+// is on (iOS 16.4+).
 
 const STORAGE_KEY = "mpl-sound-enabled";
 const CHANGE_EVENT = "mpl:sound-change";
+const RINGTONE_SRC = "/sounds/ringtone.wav";
+const NOTIFICATION_SRC = "/sounds/notification.wav";
 
 let audioContext = null;
-let ringtoneTimer = null;
+let webRingtoneTimer = null;
+let vibrationTimer = null;
+let ringtoneAudio = null;
+let notificationAudio = null;
+let audioPrimed = false;
+let ringtoneToken = 0;
+
+function applyAudioSession() {
+  if (typeof navigator === "undefined") return;
+
+  // iOS 16.4+ lets a page opt into "playback" audio, which is audible even
+  // when the ring/silent switch is on.
+  try {
+    if (navigator.audioSession && navigator.audioSession.type !== "playback") {
+      navigator.audioSession.type = "playback";
+    }
+  } catch {
+    // Not supported on this browser.
+  }
+}
 
 function getAudioContext() {
   if (typeof window === "undefined") return null;
 
-  const AudioContextClass =
-    window.AudioContext || window.webkitAudioContext;
+  const AudioContextClass = window.AudioContext || window.webkitAudioContext;
 
   if (!AudioContextClass) return null;
 
   if (!audioContext) {
     try {
-      audioContext = new AudioContextClass();
-    } catch (error) {
-      console.error("Unable to create audio context:", error);
-      return null;
+      audioContext = new AudioContextClass({ latencyHint: "interactive" });
+    } catch {
+      try {
+        audioContext = new AudioContextClass();
+      } catch (error) {
+        console.error("Unable to create audio context:", error);
+        return null;
+      }
     }
   }
 
@@ -37,8 +66,120 @@ function getAudioContext() {
   return audioContext;
 }
 
+function getRingtoneAudio() {
+  if (typeof Audio === "undefined") return null;
+
+  if (!ringtoneAudio) {
+    ringtoneAudio = new Audio(RINGTONE_SRC);
+    ringtoneAudio.preload = "auto";
+    ringtoneAudio.loop = true;
+    ringtoneAudio.volume = 1;
+    ringtoneAudio.setAttribute("playsinline", "");
+  }
+
+  return ringtoneAudio;
+}
+
+function getNotificationAudio() {
+  if (typeof Audio === "undefined") return null;
+
+  if (!notificationAudio) {
+    notificationAudio = new Audio(NOTIFICATION_SRC);
+    notificationAudio.preload = "auto";
+    notificationAudio.volume = 1;
+    notificationAudio.setAttribute("playsinline", "");
+  }
+
+  return notificationAudio;
+}
+
+// Playing each element once inside a user gesture unlocks it for later
+// programmatic playback (required by iOS Safari and Android Chrome). The
+// first interaction may produce a very short, very quiet blip.
+function primeAudioElements() {
+  if (audioPrimed) return;
+
+  let primedAny = false;
+
+  [getRingtoneAudio(), getNotificationAudio()].forEach((audio) => {
+    if (!audio) return;
+
+    const normalVolume = audio.volume;
+
+    try {
+      audio.volume = 0.05;
+      audio.currentTime = 0;
+
+      const finish = () => {
+        audio.pause();
+
+        try {
+          audio.currentTime = 0;
+        } catch {
+          // Some browsers block seeking before metadata loads.
+        }
+
+        audio.volume = normalVolume;
+      };
+
+      const attempt = audio.play();
+
+      if (attempt && typeof attempt.then === "function") {
+        attempt
+          .then(() => {
+            window.setTimeout(finish, 60);
+            primedAny = true;
+            audioPrimed = primedAny;
+          })
+          .catch(() => {
+            audio.volume = normalVolume;
+          });
+      } else {
+        finish();
+        primedAny = true;
+      }
+    } catch {
+      audio.volume = normalVolume;
+    }
+  });
+
+  audioPrimed = primedAny;
+}
+
 export function unlockAudio() {
-  getAudioContext();
+  applyAudioSession();
+
+  const context = getAudioContext();
+
+  if (context) {
+    if (context.state === "suspended") {
+      context.resume().catch(() => {});
+    }
+
+    // Silent buffer: the classic iOS Web Audio unlock.
+    if (!audioPrimed) {
+      try {
+        const buffer = context.createBuffer(1, 1, 22050);
+        const source = context.createBufferSource();
+        source.buffer = buffer;
+        source.connect(context.destination);
+        source.start(0);
+      } catch {
+        // Optional warm-up only.
+      }
+    }
+  }
+
+  primeAudioElements();
+}
+
+export function resumeAudio() {
+  applyAudioSession();
+  const context = getAudioContext();
+
+  if (context && context.state === "suspended") {
+    context.resume().catch(() => {});
+  }
 }
 
 export function isSoundEnabled() {
@@ -75,7 +216,10 @@ export function subscribeToSoundChange(callback) {
   return () => window.removeEventListener(CHANGE_EVENT, handler);
 }
 
-function playTone(context, { frequency, start, duration, type = "sine", volume = 0.06 }) {
+function playTone(
+  context,
+  { frequency, start, duration, type = "sine", volume = 0.18 }
+) {
   const oscillator = context.createOscillator();
   const gain = context.createGain();
 
@@ -93,12 +237,7 @@ function playTone(context, { frequency, start, duration, type = "sine", volume =
   oscillator.stop(start + duration + 0.05);
 }
 
-/**
- * Short two-note chime for new messages and notifications.
- */
-export function playNotificationSound() {
-  if (!isSoundEnabled()) return;
-
+function playNotificationTone() {
   const context = getAudioContext();
   if (!context) return;
 
@@ -107,16 +246,132 @@ export function playNotificationSound() {
   playTone(context, {
     frequency: 880,
     start: now,
-    duration: 0.16,
-    volume: 0.05,
+    duration: 0.18,
+    volume: 0.16,
   });
 
   playTone(context, {
     frequency: 1174.66,
     start: now + 0.14,
-    duration: 0.22,
-    volume: 0.05,
+    duration: 0.24,
+    volume: 0.18,
   });
+
+  playTone(context, {
+    frequency: 1567.98,
+    start: now + 0.28,
+    duration: 0.3,
+    volume: 0.14,
+  });
+}
+
+/**
+ * Short three-note chime for new messages and notifications.
+ */
+export function playNotificationSound() {
+  if (!isSoundEnabled()) return;
+
+  applyAudioSession();
+
+  const audio = getNotificationAudio();
+
+  if (audio) {
+    try {
+      audio.pause();
+      audio.currentTime = 0;
+      const attempt = audio.play();
+
+      if (attempt && typeof attempt.catch === "function") {
+        attempt.catch(() => playNotificationTone());
+      }
+
+      return;
+    } catch {
+      // Fall through to Web Audio.
+    }
+  }
+
+  playNotificationTone();
+}
+
+function startVibration() {
+  if (typeof navigator === "undefined" || !navigator.vibrate) return;
+
+  const pattern = [600, 300, 600, 300, 600];
+
+  try {
+    navigator.vibrate(pattern);
+  } catch {
+    return;
+  }
+
+  vibrationTimer = window.setInterval(() => {
+    try {
+      navigator.vibrate(pattern);
+    } catch {
+      // Vibration is optional.
+    }
+  }, 4200);
+}
+
+function stopVibration() {
+  if (vibrationTimer) {
+    window.clearInterval(vibrationTimer);
+    vibrationTimer = null;
+  }
+
+  if (typeof navigator !== "undefined" && navigator.vibrate) {
+    try {
+      navigator.vibrate(0);
+    } catch {
+      // Vibration is optional.
+    }
+  }
+}
+
+function startWebAudioRingtone() {
+  const context = getAudioContext();
+  if (!context) return;
+
+  const ring = () => {
+    const now = context.currentTime;
+
+    [0, 0.62].forEach((offset) => {
+      playTone(context, {
+        frequency: 740,
+        start: now + offset,
+        duration: 0.46,
+        type: "triangle",
+        volume: 0.3,
+      });
+
+      playTone(context, {
+        frequency: 988,
+        start: now + offset,
+        duration: 0.46,
+        type: "sine",
+        volume: 0.24,
+      });
+
+      playTone(context, {
+        frequency: 1480,
+        start: now + offset,
+        duration: 0.46,
+        type: "sine",
+        volume: 0.12,
+      });
+    });
+  };
+
+  ring();
+  webRingtoneTimer = window.setInterval(ring, 2100);
+}
+
+function stopWebAudioRingtone() {
+  if (webRingtoneTimer) {
+    window.clearInterval(webRingtoneTimer);
+    webRingtoneTimer = null;
+  }
 }
 
 /**
@@ -128,56 +383,50 @@ export function startRingtone() {
 
   if (!isSoundEnabled()) return () => {};
 
-  const context = getAudioContext();
-  if (!context) return () => {};
+  applyAudioSession();
 
-  const ring = () => {
-    const now = context.currentTime;
+  const token = ++ringtoneToken;
+  const audio = getRingtoneAudio();
 
-    [0, 0.55].forEach((offset) => {
-      playTone(context, {
-        frequency: 740,
-        start: now + offset,
-        duration: 0.4,
-        type: "triangle",
-        volume: 0.11,
-      });
+  if (audio) {
+    try {
+      audio.currentTime = 0;
+      audio.volume = 1;
 
-      playTone(context, {
-        frequency: 988,
-        start: now + offset,
-        duration: 0.4,
-        type: "sine",
-        volume: 0.08,
-      });
-    });
+      const attempt = audio.play();
 
-    if (typeof navigator !== "undefined" && navigator.vibrate) {
-      try {
-        navigator.vibrate([400, 200, 400]);
-      } catch {
-        // Vibration is optional.
+      if (attempt && typeof attempt.catch === "function") {
+        attempt.catch(() => {
+          // Only fall back if this ring is still the current one.
+          if (token === ringtoneToken) startWebAudioRingtone();
+        });
       }
-    }
-  };
 
-  ring();
-  ringtoneTimer = window.setInterval(ring, 2300);
+      startVibration();
+      return stopRingtone;
+    } catch {
+      // Fall through to Web Audio.
+    }
+  }
+
+  startWebAudioRingtone();
+  startVibration();
 
   return stopRingtone;
 }
 
 export function stopRingtone() {
-  if (ringtoneTimer) {
-    window.clearInterval(ringtoneTimer);
-    ringtoneTimer = null;
-  }
+  ringtoneToken += 1;
 
-  if (typeof navigator !== "undefined" && navigator.vibrate) {
+  if (ringtoneAudio) {
     try {
-      navigator.vibrate(0);
+      ringtoneAudio.pause();
+      ringtoneAudio.currentTime = 0;
     } catch {
-      // Vibration is optional.
+      // Ignore browsers that reject seeking before metadata loads.
     }
   }
+
+  stopWebAudioRingtone();
+  stopVibration();
 }

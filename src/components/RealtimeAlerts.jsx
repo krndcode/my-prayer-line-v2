@@ -6,8 +6,8 @@
 //
 // Everything runs on Firestore listeners that already exist for the app, so
 // no Cloud Functions or push service are required. Browsers block audio until
-// the user interacts with the page, so the audio context is unlocked on the
-// first click or key press.
+// the user interacts with the page, so audio is unlocked on every gesture and
+// again whenever the tab/app returns to the foreground.
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { usePathname, useRouter } from "next/navigation";
@@ -32,20 +32,23 @@ import {
 // Guard rails so a large group list cannot open hundreds of listeners.
 const MAX_GROUP_LISTENERS = 25;
 
-// Calls older than this are treated as history rather than something to ring
-// for (for example when a tab has been asleep for a while).
-const RING_MAX_AGE_MS = 60 * 1000;
+// Marks the call this browser tab started or joined so that device does not
+// ring for its own call. Other devices signed into the same account still do.
+const ACTIVE_CALL_KEY = "mpl-active-call";
 
 // Collapse bursts of notifications (a batch of messages) into one chime.
 const PING_THROTTLE_MS = 1500;
 
-function getMillis(timestamp) {
-  if (!timestamp) return 0;
-  if (typeof timestamp.toMillis === "function") return timestamp.toMillis();
-  if (typeof timestamp === "number") return timestamp;
+function isLocallyActiveCall(groupId, callId) {
+  if (typeof window === "undefined") return false;
 
-  const parsed = new Date(timestamp).getTime();
-  return Number.isNaN(parsed) ? 0 : parsed;
+  try {
+    return (
+      window.sessionStorage.getItem(ACTIVE_CALL_KEY) === `${groupId}:${callId}`
+    );
+  } catch {
+    return false;
+  }
 }
 
 function getInitials(name = "") {
@@ -90,23 +93,39 @@ export default function RealtimeAlerts() {
     pathnameRef.current = pathname;
   }, [pathname]);
 
-  // Browsers keep audio locked until the first user gesture.
+  // Browsers keep audio locked until the first user gesture. Keep the
+  // listeners attached so audio can also be resumed after the app has been
+  // in the background (common on mobile).
   useEffect(() => {
     function unlock() {
       unlockAudio();
-      window.removeEventListener("pointerdown", unlock);
-      window.removeEventListener("keydown", unlock);
-      window.removeEventListener("touchstart", unlock);
+    }
+
+    function handleVisibilityChange() {
+      if (document.visibilityState !== "visible") return;
+
+      unlockAudio();
+
+      // Mobile browsers pause timers while the page is hidden. If a call is
+      // still ringing when the user comes back, start the ringtone again.
+      if (incomingRef.current) {
+        ringtoneStopRef.current?.();
+        ringtoneStopRef.current = startRingtone();
+      }
     }
 
     window.addEventListener("pointerdown", unlock, { passive: true });
     window.addEventListener("keydown", unlock);
     window.addEventListener("touchstart", unlock, { passive: true });
+    window.addEventListener("focus", unlock);
+    document.addEventListener("visibilitychange", handleVisibilityChange);
 
     return () => {
       window.removeEventListener("pointerdown", unlock);
       window.removeEventListener("keydown", unlock);
       window.removeEventListener("touchstart", unlock);
+      window.removeEventListener("focus", unlock);
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
     };
   }, []);
 
@@ -179,9 +198,6 @@ export default function RealtimeAlerts() {
           if (data.read === true || data.unread === false) return;
           if (data.type === "group_pending") return;
 
-          const createdAt = getMillis(data.createdAt);
-          if (createdAt && now - createdAt > RING_MAX_AGE_MS) return;
-
           // Do not ping for the conversation the user is already reading.
           if (data.destination && pathnameRef.current === data.destination) {
             return;
@@ -228,19 +244,13 @@ export default function RealtimeAlerts() {
 
     function considerCall(call, groupId) {
       if (!call || call.status !== "active") return;
-      if (call.createdBy === uid) return;
+      if (isLocallyActiveCall(groupId, call.id)) return;
       if (seenCallsRef.current.has(call.id)) return;
 
       seenCallsRef.current.add(call.id);
 
       if (dismissedCallsRef.current.has(call.id)) return;
       if (incomingRef.current) return;
-
-      const createdAt = getMillis(call.createdAt);
-      if (createdAt && Date.now() - createdAt > RING_MAX_AGE_MS) return;
-
-      // The group page already shows a join button, so do not ring there.
-      if (pathnameRef.current === `/prayer-space/${groupId}`) return;
 
       const nextCall = {
         id: call.id,
@@ -304,14 +314,26 @@ export default function RealtimeAlerts() {
     };
   }, [uid, groups, clearIncomingCall]);
 
-  // Stop ringing as soon as the user opens the group with the call.
+  // If this tab starts or joins the ringing call, stop the banner and tone.
   useEffect(() => {
-    const current = incomingRef.current;
+    function handleActiveCall(event) {
+      const detail = event.detail;
+      const current = incomingRef.current;
 
-    if (current && pathname === `/prayer-space/${current.groupId}`) {
-      clearIncomingCall();
+      if (!detail || !current) return;
+
+      if (
+        detail.groupId === current.groupId &&
+        detail.callId === current.id
+      ) {
+        clearIncomingCall();
+      }
     }
-  }, [pathname, clearIncomingCall]);
+
+    window.addEventListener("mpl:active-call", handleActiveCall);
+
+    return () => window.removeEventListener("mpl:active-call", handleActiveCall);
+  }, [clearIncomingCall]);
 
   useEffect(() => () => stopRingtone(), []);
 
@@ -319,10 +341,21 @@ export default function RealtimeAlerts() {
     const current = incomingRef.current;
     if (!current) return;
 
-    const destination = `/prayer-space/${current.groupId}?joinCall=${current.id}`;
+    const groupPath = `/prayer-space/${current.groupId}`;
 
     clearIncomingCall();
-    router.push(destination);
+
+    if (pathnameRef.current === groupPath) {
+      // Already on the group page: ask the mounted call component to join.
+      window.dispatchEvent(
+        new CustomEvent("mpl:join-call", {
+          detail: { groupId: current.groupId, callId: current.id },
+        })
+      );
+      return;
+    }
+
+    router.push(`${groupPath}?joinCall=${current.id}`);
   }
 
   function handleDecline() {
