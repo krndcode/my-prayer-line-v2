@@ -21,7 +21,7 @@ import {
   VideoOff,
 } from "lucide-react";
 import { db } from "@/lib/firebase";
-import { stopRingtone } from "@/lib/sound";
+import { stopRingtone, setCallAudioActive } from "@/lib/sound";
 
 const rtcConfiguration = {
   iceServers: [{ urls: "stun:stun.l.google.com:19302" }],
@@ -104,7 +104,25 @@ function MediaTile({ stream, label, muted = false, audioOnly = false }) {
 
   useEffect(() => {
     if (videoRef.current) videoRef.current.srcObject = stream || null;
-    if (audioRef.current) audioRef.current.srcObject = stream || null;
+
+    const audio = audioRef.current;
+
+    if (!audio) return;
+
+    audio.srcObject = stream || null;
+
+    // Mobile browsers can ignore autoplay when srcObject is assigned after
+    // mount, which leaves the other members silent. Ask for playback
+    // explicitly on every new stream.
+    if (stream) {
+      const attempt = audio.play();
+
+      if (attempt && typeof attempt.catch === "function") {
+        attempt.catch(() => {
+          // Playback will be retried when the user interacts with the page.
+        });
+      }
+    }
   }, [stream, audioOnly]);
 
   const initials = label
@@ -126,7 +144,7 @@ function MediaTile({ stream, label, muted = false, audioOnly = false }) {
         />
       )}
       {stream && (
-        <audio ref={audioRef} autoPlay playsInline muted={muted} className="hidden" />
+        <audio ref={audioRef} autoPlay playsInline muted={muted} className="sr-only" />
       )}
       {(!stream || audioOnly) && (
         <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 text-white">
@@ -169,6 +187,13 @@ export default function GroupCall({ groupId, groupName, user, canJoin }) {
       setElapsedSeconds((seconds) => seconds + 1);
     }, 1000);
     return () => window.clearInterval(interval);
+  }, [callId]);
+
+  // Safari needs the "play-and-record" audio session while a call is live so
+  // the microphone is captured and sent to the other members.
+  useEffect(() => {
+    setCallAudioActive(Boolean(callId));
+    return () => setCallAudioActive(false);
   }, [callId]);
 
   useEffect(() => {
@@ -531,6 +556,7 @@ export default function GroupCall({ groupId, groupName, user, canJoin }) {
     // Starting a call is an accept gesture: make sure any other ringtone
     // still playing in this tab stops right away.
     stopRingtone();
+    setCallAudioActive(true);
     markCallPending(groupId);
     notifyActiveCall(groupId, "pending");
     setWorking(true);
@@ -564,6 +590,7 @@ export default function GroupCall({ groupId, groupName, user, canJoin }) {
       }
     } catch (callError) {
       stream?.getTracks().forEach((track) => track.stop());
+      setCallAudioActive(false);
       clearActiveCallMark();
       if (callRef) {
         try {
@@ -589,6 +616,7 @@ export default function GroupCall({ groupId, groupName, user, canJoin }) {
     // Accepting a call must silence the ringtone immediately, before the
     // permission prompt and Firestore writes finish.
     stopRingtone();
+    setCallAudioActive(true);
     notifyActiveCall(groupId, activeCall.id);
     setWorking(true);
     setError("");
@@ -615,6 +643,7 @@ export default function GroupCall({ groupId, groupName, user, canJoin }) {
       }
     } catch (callError) {
       stream?.getTracks().forEach((track) => track.stop());
+      setCallAudioActive(false);
       console.error("Joining group call failed:", callError);
       setError(callError.code === "permission-denied"
         ? "Firestore rules must allow group members to join calls and use signaling documents."

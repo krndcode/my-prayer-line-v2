@@ -24,15 +24,20 @@ let ringtoneAudio = null;
 let notificationAudio = null;
 let audioPrimed = false;
 let ringtoneToken = 0;
+let callAudioActive = false;
 
 function applyAudioSession() {
   if (typeof navigator === "undefined") return;
 
+  // During a live call the session must allow recording; forcing "playback"
+  // here would stop the microphone reaching the other members (iOS 16.4+).
+  const type = callAudioActive ? "play-and-record" : "playback";
+
   // iOS 16.4+ lets a page opt into "playback" audio, which is audible even
   // when the ring/silent switch is on.
   try {
-    if (navigator.audioSession && navigator.audioSession.type !== "playback") {
-      navigator.audioSession.type = "playback";
+    if (navigator.audioSession && navigator.audioSession.type !== type) {
+      navigator.audioSession.type = type;
     }
   } catch {
     // Not supported on this browser.
@@ -180,6 +185,16 @@ export function resumeAudio() {
   if (context && context.state === "suspended") {
     context.resume().catch(() => {});
   }
+}
+
+/**
+ * Switches the audio session between ring/notification playback and a live
+ * call. Must be called with `true` before `getUserMedia` so Safari allows the
+ * microphone to be captured and transmitted.
+ */
+export function setCallAudioActive(active) {
+  callAudioActive = Boolean(active);
+  applyAudioSession();
 }
 
 export function isSoundEnabled() {
