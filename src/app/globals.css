@@ -1,0 +1,177 @@
+
+@import url('https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Manrope:wght@500;600;700;800&display=swap');
+@import "tailwindcss";
+
+:root {
+  --forest: #064e3b;
+  --emerald: #059669;
+  --mint: #e7f4ee;
+  --gold: #d6b56d;
+  --cream: #fafaf7;
+  --ink: #1f2937;
+  --muted: #6b7280;
+  --line: #e8e9e5;
+  --surface: #ffffff;
+  --shadow: 0 12px 34px rgba(31, 41, 55, 0.07);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html {
+  scroll-behavior: smooth;
+}
+
+body {
+  margin: 0;
+  background: var(--cream);
+  color: var(--ink);
+  font-family: 'DM Sans', sans-serif;
+}
+
+h1, h2, h3, h4, h5, h6 {
+  font-family: 'Manrope', sans-serif;
+  letter-spacing: -0.04em;
+}
+
+button, input, textarea, select {
+  font: inherit;
+}
+
+button {
+  cursor: pointer;
+}
+
+a {
+  color: inherit;
+  text-decoration: none;
+}
+
+:root {
+  color-scheme: light;
+}
+
+html[data-theme="dark"] {
+  color-scheme: dark;
+}
+
+html[data-theme="dark"] body {
+  background: #101a16;
+  color: #e6eee9;
+}
+
+html[data-theme="dark"] [class*="bg-white"],
+html[data-theme="dark"] [class*="bg-[#fafaf7]"],
+html[data-theme="dark"] [class*="bg-[#fafbf9]"],
+html[data-theme="dark"] [class*="bg-[#f8faf8]"],
+html[data-theme="dark"] [class*="bg-[#f7f9f7]"],
+html[data-theme="dark"] [class*="bg-[#f6f8f5]"],
+html[data-theme="dark"] [class*="bg-[#f5f8f5]"],
+html[data-theme="dark"] [class*="bg-[#f4f7f4]"] {
+  background-color: #18251f;
+}
+
+html[data-theme="dark"] [class*="bg-[#f8fbf9]"],
+html[data-theme="dark"] [class*="bg-[#f0f8f2]"],
+html[data-theme="dark"] [class*="bg-[#edf6f2]"],
+html[data-theme="dark"] [class*="bg-[#eaf5f0]"],
+html[data-theme="dark"] [class*="bg-[#eaf4ed]"],
+html[data-theme="dark"] [class*="bg-[#e7f4ee]"] {
+  background-color: #20352a;
+}
+
+html[data-theme="dark"] [class*="border-[#e8e9e5]"],
+html[data-theme="dark"] [class*="border-[#edf0ec]"],
+html[data-theme="dark"] [class*="border-gray-200"] {
+  border-color: #304139;
+}
+
+html[data-theme="dark"] [class*="text-[#172720]"],
+html[data-theme="dark"] [class*="text-[#1f2937]"],
+html[data-theme="dark"] [class*="text-[#26332c]"],
+html[data-theme="dark"] [class*="text-[#263d31]"],
+html[data-theme="dark"] [class*="text-gray-900"],
+html[data-theme="dark"] [class*="text-gray-800"] {
+  color: #e6eee9;
+}
+
+html[data-theme="dark"] [class*="text-[#6b7280]"],
+html[data-theme="dark"] [class*="text-[#718078]"],
+html[data-theme="dark"] [class*="text-[#84938a]"],
+html[data-theme="dark"] [class*="text-gray-600"],
+html[data-theme="dark"] [class*="text-gray-500"] {
+  color: #a7b6ad;
+}
+
+html[data-theme="dark"] input,
+html[data-theme="dark"] textarea,
+html[data-theme="dark"] select {
+  background-color: #18251f;
+  border-color: #405349;
+  color: #e6eee9;
+}
+
+html[data-theme="dark"] input::placeholder,
+html[data-theme="dark"] textarea::placeholder {
+  color: #87988e;
+}
+
+[class*="text-[#064e3b]"],
+[class*="text-[#053d2f]"],
+[class*="text-[#043c2d]"] {
+  color: #064e3b;
+}
+
+[class*="bg-[#064e3b]"],
+[class*="bg-[#053d2f]"],
+[class*="bg-[#043c2d]"] {
+  background-color: #064e3b;
+}
+
+[class*="text-[#059669]"],
+[class*="text-[#34875c]"],
+[class*="text-[#329568]"],
+[class*="text-[#399568]"] {
+  color: #16835d;
+}
+
+[class*="bg-[#059669]"],
+[class*="bg-[#34875c]"],
+[class*="bg-[#329568]"],
+[class*="bg-[#399568]"] {
+  background-color: #16835d;
+}
+
+[class~="text-emerald-600"],
+[class~="text-emerald-700"],
+[class~="text-emerald-800"] {
+  color: #16835d;
+}
+
+[class~="bg-emerald-600"],
+[class~="bg-emerald-700"] {
+  background-color: #16835d;
+}
+
+[class~="bg-emerald-50"],
+[class~="bg-emerald-100"] {
+  background-color: #e7f4ee;
+}
+
+html[data-theme="dark"] [class*="text-[#064e3b]"],
+html[data-theme="dark"] [class*="text-[#053d2f]"],
+html[data-theme="dark"] [class*="text-[#043c2d]"] {
+  color: #8ed3ae;
+}
+
+html[data-theme="dark"] [class~="text-emerald-600"],
+html[data-theme="dark"] [class~="text-emerald-700"],
+html[data-theme="dark"] [class~="text-emerald-800"] {
+  color: #8ed3ae;
+}
+
+html[data-theme="dark"] [class~="bg-emerald-50"],
+html[data-theme="dark"] [class~="bg-emerald-100"] {
+  background-color: #20352a;
+}
