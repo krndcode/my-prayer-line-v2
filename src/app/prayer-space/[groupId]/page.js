@@ -1,9 +1,8 @@
 
 "use client";
 
-import { Suspense, use, useEffect, useMemo, useRef, useState } from "react";
+import { Fragment, Suspense, use, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
-import Image from "next/image";
 import { useRouter } from "next/navigation";
 import {
   ArrowLeft,
@@ -12,7 +11,6 @@ import {
   Home,
   MoreHorizontal,
   Send,
-  HelpCircle,
   Heart,
   HandHeart,
   Users,
@@ -22,11 +20,11 @@ import {
   Smile,
   Reply,
   Settings,
-  MessageCircle,
   Check,
   Clock,
   LoaderCircle,
   AlertCircle,
+  Trash2,
 } from "lucide-react";
 
 import { onAuthStateChanged } from "firebase/auth";
@@ -73,42 +71,6 @@ function getInitials(name = "") {
     .join("") || "U";
 }
 
-function openGroupSettings() {
-  setSettingsDescription(group.description || "");
-  setSettingsPrivacy(group.privacy || "Private");
-  setSettingsError("");
-  setShowGroupSettings(true);
-  setShowMore(false);
-}
-
-async function saveGroupSettings(event) {
-  event.preventDefault();
-  if (!isAdmin || !hasAccess || savingSettings) return;
-
-  const description = settingsDescription.trim();
-  if (description.length > 300) {
-    setSettingsError("Description cannot exceed 300 characters.");
-    return;
-  }
-
-  setSavingSettings(true);
-  setSettingsError("");
-  try {
-    await updateDoc(doc(db, "prayerGroups", groupId), {
-      description,
-      privacy: settingsPrivacy,
-      updatedAt: serverTimestamp(),
-    });
-    setShowGroupSettings(false);
-    showNotice("Group settings updated.");
-  } catch (error) {
-    console.error("Group settings update failed:", error);
-    setSettingsError(getErrorMessage(error));
-  } finally {
-    setSavingSettings(false);
-  }
-}
-
 function formatMessageTime(timestamp) {
   if (!timestamp) return "Just now";
 
@@ -121,6 +83,29 @@ function formatMessageTime(timestamp) {
   return date.toLocaleTimeString([], {
     hour: "numeric",
     minute: "2-digit",
+  });
+}
+
+function formatDayLabel(timestamp) {
+  if (!timestamp) return "";
+
+  const date = timestamp.toDate ? timestamp.toDate() : new Date(timestamp);
+
+  if (Number.isNaN(date.getTime())) return "";
+
+  const today = new Date();
+  const yesterday = new Date();
+  yesterday.setDate(today.getDate() - 1);
+
+  const isSameDay = (a, b) => a.toDateString() === b.toDateString();
+
+  if (isSameDay(date, today)) return "Today";
+  if (isSameDay(date, yesterday)) return "Yesterday";
+
+  return date.toLocaleDateString([], {
+    day: "numeric",
+    month: "short",
+    year: "numeric",
   });
 }
 
@@ -569,6 +554,11 @@ function GroupRoomContent({ params }) {
   const [message, setMessage] = useState("");
   const [showEmojiPicker, setShowEmojiPicker] = useState(false);
   const messageInputRef = useRef(null);
+  const messagesEndRef = useRef(null);
+
+  useEffect(() => {
+    messagesEndRef.current?.scrollIntoView({ block: "end" });
+  }, [messages.length, groupId]);
 
   useEffect(() => {
     if (!hasAccess || !groupId || !user) return;
@@ -985,6 +975,53 @@ function GroupRoomContent({ params }) {
   function showNotice(text) {
     setNotice(text);
     window.setTimeout(() => setNotice(""), 3500);
+  }
+
+  function openGroupSettings() {
+    setSettingsDescription(group?.description || "");
+    setSettingsPrivacy(group?.privacy || "Private");
+    setSettingsError("");
+    setShowGroupSettings(true);
+    setShowMore(false);
+  }
+
+  async function saveGroupSettings(event) {
+    event.preventDefault();
+
+    if (!isGroupOwner || !hasAccess || savingSettings) return;
+
+    const description = settingsDescription.trim();
+
+    if (description.length > 300) {
+      setSettingsError("Description cannot exceed 300 characters.");
+      return;
+    }
+
+    setSavingSettings(true);
+    setSettingsError("");
+
+    try {
+      const payload = {
+        description,
+        privacy: settingsPrivacy,
+        updatedAt: serverTimestamp(),
+      };
+
+      // The security rules require `image` to stay a string. Older group
+      // documents may not have the field, so make sure it is present.
+      if (typeof group?.image !== "string") {
+        payload.image = "";
+      }
+
+      await updateDoc(doc(db, "prayerGroups", groupId), payload);
+      setShowGroupSettings(false);
+      showNotice("Group settings updated.");
+    } catch (error) {
+      console.error("Group settings update failed:", error);
+      setSettingsError(getErrorMessage(error));
+    } finally {
+      setSavingSettings(false);
+    }
   }
 
   const reportableMembers = useMemo(() => {
@@ -1426,7 +1463,7 @@ function GroupRoomContent({ params }) {
   const groupMemberCount = members.length || group.memberCount || 0;
 
   return (
-    <main className="flex h-[100dvh] min-h-[620px] overflow-hidden bg-[#fafbf9] text-[#24372f]">
+    <main className="relative flex h-[100dvh] min-h-[620px] overflow-hidden bg-[#fafbf9] text-[#24372f]">
 
       {/* ======================================
           LEFT CONVERSATION SIDEBAR
@@ -1435,65 +1472,69 @@ function GroupRoomContent({ params }) {
       <aside
         className={`${
           showMobileGroups ? "flex" : "hidden"
-        } absolute inset-0 z-40 w-full flex-col border-r border-[#e9eee9] bg-white md:relative md:flex md:w-[310px] md:shrink-0 lg:w-[340px]`}
+        } absolute inset-0 z-40 w-full flex-col border-r border-[#e9edef] bg-white md:relative md:flex md:w-[300px] md:shrink-0 lg:w-[340px]`}
       >
-        <div className="border-b border-[#edf0ec] px-5 pb-5 pt-5">
-          <div className="mb-7 flex items-center justify-between">
-            <Link
-              href="/prayer-space"
-              className="flex items-center gap-2 text-sm font-semibold text-[#64736b] transition hover:text-[#064e3b]"
-            >
-              <ArrowLeft size={17} />
-              Prayer Space
-            </Link>
+        {/* Sidebar header */}
+        <div className="flex h-16 shrink-0 items-center gap-2 border-b border-[#e9edef] bg-[#f0f2f5] px-2 sm:px-3">
+          <Link
+            href="/prayer-space"
+            aria-label="Back to Prayer Space"
+            className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full text-[#54656f] transition hover:bg-[#e2e6e8]"
+          >
+            <ArrowLeft size={20} />
+          </Link>
 
-            <div className="flex items-center gap-2">
-              <button
-                onClick={() => router.push("/prayer-space")}
-                aria-label="Create group"
-                className="flex h-10 w-10 items-center justify-center rounded-xl bg-[#064e3b] text-white shadow-sm transition hover:bg-[#043c2d]"
-              >
-                <Plus size={21} />
-              </button>
+          <h2 className="min-w-0 flex-1 truncate text-[15px] font-semibold text-[#111b21]">
+            Chats
+          </h2>
 
-              <button
-                onClick={() => setShowMobileGroups(false)}
-                className="rounded-lg p-2 text-gray-400 md:hidden"
-                aria-label="Close conversations"
-              >
-                <X size={20} />
-              </button>
-            </div>
-          </div>
+          <button
+            onClick={() => router.push("/prayer-space")}
+            aria-label="Create group"
+            className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full text-[#54656f] transition hover:bg-[#e2e6e8]"
+          >
+            <Plus size={21} />
+          </button>
 
+          <button
+            onClick={() => setShowMobileGroups(false)}
+            aria-label="Close conversations"
+            className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full text-[#54656f] transition hover:bg-[#e2e6e8] md:hidden"
+          >
+            <X size={20} />
+          </button>
+        </div>
+
+        {/* Search */}
+        <div className="shrink-0 border-b border-[#e9edef] bg-white px-3 py-2">
           <div className="relative">
             <Search
-              size={17}
-              className="absolute left-4 top-1/2 -translate-y-1/2 text-[#9aa69e]"
+              size={16}
+              className="absolute left-3.5 top-1/2 -translate-y-1/2 text-[#8696a0]"
             />
 
             <input
               value={search}
               onChange={(event) => setSearch(event.target.value)}
               placeholder="Search conversations"
-              className="h-12 w-full rounded-xl border border-[#edf0ec] bg-[#f8faf8] pl-11 pr-4 text-xs text-[#34483d] outline-none transition placeholder:text-[#9aa69e] focus:border-[#8bc7a8] focus:bg-white"
+              className="h-10 w-full rounded-lg border border-transparent bg-[#f0f2f5] pl-10 pr-4 text-[13px] text-[#111b21] outline-none transition placeholder:text-[#8696a0] focus:border-[#00a884] focus:bg-white"
             />
           </div>
         </div>
 
-        {/* Actual user groups */}
-        <div className="flex-1 overflow-y-auto px-4 py-5">
-          <div className="mb-4 flex items-center justify-between px-2">
-            <h2 className="text-[11px] font-bold uppercase tracking-[0.14em] text-[#89968d]">
-              Your Groups
-            </h2>
+        {/* Conversation list */}
+        <div className="flex-1 overflow-y-auto">
+          <div className="flex items-center justify-between px-4 pb-1 pt-4">
+            <h3 className="text-[11px] font-semibold uppercase tracking-[0.12em] text-[#8696a0]">
+              Your groups
+            </h3>
 
-            <span className="rounded-full bg-[#edf6f0] px-2.5 py-1 text-[10px] font-bold text-[#34835c]">
+            <span className="rounded-full bg-[#e7fce3] px-2 py-0.5 text-[10px] font-bold text-[#1f7a5c]">
               {sidebarGroups.length}
             </span>
           </div>
 
-          <div className="space-y-2">
+          <div className="pb-3">
             {filteredGroups.map((item) => {
               const active = item.id === groupId;
               const itemImage = formatGroupImage(item);
@@ -1503,42 +1544,42 @@ function GroupRoomContent({ params }) {
                 <button
                   key={item.id}
                   onClick={() => selectGroup(item)}
-                  className={`flex w-full items-center gap-3 rounded-2xl p-3 text-left transition ${
-                    active
-                      ? "border border-[#dceee2] bg-[#f0f8f2]"
-                      : "border border-transparent hover:bg-[#f8faf8]"
+                  className={`flex w-full items-center gap-3 px-3 py-2.5 text-left transition ${
+                    active ? "bg-[#f0f2f5]" : "hover:bg-[#f5f6f6]"
                   }`}
                 >
-                  <div
-                    className={`flex h-[54px] w-[54px] shrink-0 items-center justify-center overflow-hidden rounded-xl bg-gradient-to-br ${itemColor} text-2xl`}
-                  >
-                    {itemImage ? (
-                      <img
-                        src={itemImage}
-                        alt={item.name || "Prayer group"}
-                        className="h-full w-full object-cover"
-                      />
-                    ) : (
-                      <HandHeart size={23} className="text-[#34875c]" />
-                    )}
-                  </div>
-
-                  <div className="min-w-0 flex-1">
-                    <div className="mb-1 flex items-center justify-between gap-2">
-                      <p className="truncate text-[12px] font-bold text-[#263d31]">
-                        {item.name}
-                      </p>
-
-                      {item.id === groupId && (
-                        <span className="h-2 w-2 shrink-0 rounded-full bg-[#329568]" />
+                  <div className="relative shrink-0">
+                    <div
+                      className={`flex h-12 w-12 items-center justify-center overflow-hidden rounded-full bg-gradient-to-br ${itemColor} text-xl`}
+                    >
+                      {itemImage ? (
+                        <img
+                          src={itemImage}
+                          alt={item.name || "Prayer group"}
+                          className="h-full w-full object-cover"
+                        />
+                      ) : (
+                        <HandHeart size={22} className="text-[#34875c]" />
                       )}
                     </div>
 
-                    <p className="truncate text-[10px] text-[#8a9890]">
+                    {active && (
+                      <span className="absolute -bottom-0.5 -right-0.5 h-3.5 w-3.5 rounded-full border-2 border-white bg-[#00a884]" />
+                    )}
+                  </div>
+
+                  <div className="min-w-0 flex-1 border-b border-[#f0f2f5] pb-2.5 pt-0.5">
+                    <div className="flex items-baseline justify-between gap-2">
+                      <p className="truncate text-[14px] font-medium text-[#111b21]">
+                        {item.name}
+                      </p>
+                    </div>
+
+                    <p className="mt-0.5 truncate text-[12px] text-[#667781]">
                       {item.description || "Prayer community"}
                     </p>
 
-                    <p className="mt-1 text-[9px] font-semibold text-[#329568]">
+                    <p className="mt-0.5 truncate text-[11px] font-medium text-[#00a884]">
                       {item.status === "active" &&
                       item.approvalStatus === "approved"
                         ? "Approved group"
@@ -1550,39 +1591,27 @@ function GroupRoomContent({ params }) {
             })}
 
             {!groupsLoading && filteredGroups.length === 0 && (
-              <p className="px-3 py-8 text-center text-xs text-gray-400">
+              <p className="px-4 py-10 text-center text-[12px] text-[#8696a0]">
                 No conversations found.
               </p>
             )}
 
             {groupsLoading && (
-              <div className="flex justify-center py-6">
+              <div className="flex justify-center py-8">
                 <LoaderCircle
                   size={20}
-                  className="animate-spin text-[#34875c]"
+                  className="animate-spin text-[#00a884]"
                 />
               </div>
             )}
           </div>
-
-          <div className="mt-8 rounded-2xl bg-[#f6f8f5] p-4">
-            <div className="mb-2 flex items-center gap-2 text-[#064e3b]">
-              <HandHeart size={17} />
-              <p className="text-[11px] font-bold">
-                Stay connected in prayer
-              </p>
-            </div>
-
-            <p className="text-[10px] leading-5 text-[#89968d]">
-              Encourage one another and keep your community growing in faith.
-            </p>
-          </div>
         </div>
 
-        <div className="border-t border-[#edf0ec] p-4">
+        {/* Sidebar footer */}
+        <div className="shrink-0 border-t border-[#e9edef] bg-white p-2">
           <Link
             href="/dashboard"
-            className="flex items-center gap-3 rounded-xl px-3 py-2.5 text-xs font-semibold text-[#78867d] hover:bg-[#f6f8f5] hover:text-[#064e3b]"
+            className="flex items-center gap-3 rounded-lg px-3 py-2.5 text-[12px] font-medium text-[#54656f] transition hover:bg-[#f0f2f5] hover:text-[#064e3b]"
           >
             <Home size={17} />
             Back to Dashboard
@@ -1598,82 +1627,58 @@ function GroupRoomContent({ params }) {
       <section className="flex min-w-0 flex-1 flex-col bg-white">
 
         {/* Conversation header */}
-        <header className="z-10 flex min-h-[82px] shrink-0 items-center justify-between gap-3 border-b border-[#edf0ec] bg-white px-4 sm:px-6 lg:px-8">
-          <div className="flex min-w-0 items-center gap-3">
-            <button
-              onClick={() => setShowMobileGroups(true)}
-              className="rounded-xl p-2 text-[#718078] hover:bg-[#f4f7f4] md:hidden"
-              aria-label="Open conversations"
-            >
-              <MessageCircle size={20} />
-            </button>
+        <header className="z-10 flex h-16 shrink-0 items-center gap-1.5 border-b border-[#e9edef] bg-[#f0f2f5] px-2 sm:gap-2 sm:px-4">
+          <button
+            onClick={() => router.push("/prayer-space")}
+            aria-label="Back to Prayer Space"
+            title="Back to Prayer Space"
+            className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full text-[#54656f] transition hover:bg-[#e2e6e8]"
+          >
+            <ArrowLeft size={20} />
+          </button>
 
-            <Link
-              href="/prayer-space"
-              className="hidden items-center gap-2 whitespace-nowrap text-xs font-semibold text-[#819087] hover:text-[#064e3b] sm:flex"
-            >
-              <ArrowLeft size={16} />
-              Prayer Space
-            </Link>
+          <div
+            className={`flex h-10 w-10 shrink-0 items-center justify-center overflow-hidden rounded-full bg-gradient-to-br ${groupColor} text-lg`}
+          >
+            {groupImage ? (
+              <img
+                src={groupImage}
+                alt={group.name}
+                className="h-full w-full object-cover"
+              />
+            ) : (
+              <HandHeart size={20} className="text-[#34875c]" />
+            )}
+          </div>
 
-            <div className="hidden h-8 w-px bg-[#edf0ec] sm:block" />
+          <div className="min-w-0 flex-1 pl-0.5">
+            <div className="flex min-w-0 items-center gap-2">
+              <h1 className="truncate text-[15px] font-semibold leading-5 text-[#111b21]">
+                {group.name}
+              </h1>
 
-            <div
-              className={`flex h-11 w-11 shrink-0 items-center justify-center overflow-hidden rounded-xl bg-gradient-to-br ${groupColor} text-xl`}
-            >
-              {groupImage ? (
-                <img
-                  src={groupImage}
-                  alt={group.name}
-                  className="h-full w-full object-cover"
-                />
-              ) : (
-                <HandHeart size={22} className="text-[#34875c]" />
+              {group.reportStatus && (
+                <span
+                  className={`shrink-0 rounded-full px-2 py-0.5 text-[8px] font-bold ${getStatusChipClass(
+                    group
+                  )}`}
+                >
+                  {getGroupPublicStatus(group).label}
+                </span>
               )}
             </div>
 
-            <div className="min-w-0">
-              <div className="flex min-w-0 items-center gap-2">
-                <h1 className="truncate font-[Manrope] text-sm font-extrabold text-[#183b2d] sm:text-base">
-                  {group.name}
-                </h1>
+            <p className="mt-0.5 flex min-w-0 items-center gap-1.5 text-[11px] leading-4 text-[#667781]">
+              <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-[#00a884]" />
 
-                {group.reportStatus && (
-                  <span
-                    className={`shrink-0 rounded-full px-2 py-0.5 text-[8px] font-bold ${getStatusChipClass(
-                      group
-                    )}`}
-                  >
-                    {getGroupPublicStatus(group).label}
-                  </span>
-                )}
-              </div>
-
-              <div className="mt-1 flex items-center gap-1.5 text-[10px] text-[#84938a]">
-                <span className="h-1.5 w-1.5 rounded-full bg-[#2fa66c]" />
-
-                <span className="font-semibold text-[#39966a]">
-                  {groupMemberCount} members
-                </span>
-
-                <span>·</span>
-
-                <span>
-                  {membership?.role === "admin" ? "Administrator" : "Member"}
-                </span>
-              </div>
-            </div>
+              <span className="truncate">
+                {groupMemberCount} members ·{" "}
+                {membership?.role === "admin" ? "Admin" : "Member"}
+              </span>
+            </p>
           </div>
 
-          <div className="flex shrink-0 items-center gap-1 sm:gap-2">
-            <Link
-              href="/dashboard"
-              aria-label="Home"
-              className="hidden h-10 w-10 items-center justify-center rounded-xl text-[#829087] transition hover:bg-[#f4f7f4] hover:text-[#064e3b] sm:flex"
-            >
-              <Home size={18} />
-            </Link>
-
+          <div className="flex shrink-0 items-center gap-0.5 sm:gap-1">
             <GroupCall
               groupId={groupId}
               groupName={group.name}
@@ -1685,21 +1690,22 @@ function GroupRoomContent({ params }) {
               <button
                 onClick={() => setShowMore((current) => !current)}
                 aria-label="More options"
-                className="flex h-10 w-10 items-center justify-center rounded-xl text-[#829087] transition hover:bg-[#f4f7f4] hover:text-[#064e3b]"
+                title="More options"
+                className="flex h-10 w-10 items-center justify-center rounded-full text-[#54656f] transition hover:bg-[#e2e6e8]"
               >
                 <MoreHorizontal size={21} />
               </button>
 
               {showMore && (
-                <div className="absolute right-0 top-12 z-30 w-52 rounded-xl border border-[#edf0ec] bg-white p-2 shadow-xl">
+                <div className="absolute right-0 top-12 z-30 w-56 overflow-hidden rounded-xl border border-[#e9edef] bg-white py-1.5 shadow-xl">
                   <button
                     onClick={() => {
                       setShowMembers(true);
                       setShowMore(false);
                     }}
-                    className="flex w-full items-center gap-3 rounded-lg px-3 py-2.5 text-left text-xs text-[#52645a] hover:bg-[#f5f8f5]"
+                    className="flex w-full items-center gap-3 px-4 py-2.5 text-left text-[13px] text-[#3b4a54] transition hover:bg-[#f0f2f5]"
                   >
-                    <Users size={15} />
+                    <Users size={16} />
                     View members
                   </button>
 
@@ -1709,9 +1715,9 @@ function GroupRoomContent({ params }) {
                         openReportModal();
                         setShowMore(false);
                       }}
-                      className="flex w-full items-center gap-3 rounded-lg px-3 py-2.5 text-left text-xs text-[#52645a] hover:bg-[#f5f8f5]"
+                      className="flex w-full items-center gap-3 px-4 py-2.5 text-left text-[13px] text-[#3b4a54] transition hover:bg-[#f0f2f5]"
                     >
-                      <AlertCircle size={15} />
+                      <AlertCircle size={16} />
                       Report group
                     </button>
                   )}
@@ -1722,19 +1728,19 @@ function GroupRoomContent({ params }) {
                         setShowSchedule(true);
                         setShowMore(false);
                       }}
-                      className="flex w-full items-center gap-3 rounded-lg px-3 py-2.5 text-left text-xs text-[#52645a] hover:bg-[#f5f8f5]"
+                      className="flex w-full items-center gap-3 px-4 py-2.5 text-left text-[13px] text-[#3b4a54] transition hover:bg-[#f0f2f5]"
                     >
-                      <CalendarDays size={15} />
+                      <CalendarDays size={16} />
                       Schedule meeting
                     </button>
                   )}
 
-                  {isAdmin && (
+                  {isGroupOwner && (
                     <button
                       onClick={openGroupSettings}
-                      className="flex w-full items-center gap-3 rounded-lg px-3 py-2.5 text-left text-xs text-[#52645a] hover:bg-[#f5f8f5]"
+                      className="flex w-full items-center gap-3 px-4 py-2.5 text-left text-[13px] text-[#3b4a54] transition hover:bg-[#f0f2f5]"
                     >
-                      <Settings size={15} />
+                      <Settings size={16} />
                       Group settings
                     </button>
                   )}
@@ -1749,13 +1755,20 @@ function GroupRoomContent({ params }) {
             CHAT MESSAGES
         ==================================== */}
 
-        <div className="flex-1 overflow-y-auto bg-white px-4 py-6 sm:px-8 lg:px-12">
-          <div className="mx-auto max-w-[850px]">
+        <div className="flex-1 overflow-y-auto bg-[#efeae2]">
+          <div
+            className="mx-auto flex min-h-full w-full max-w-3xl flex-col px-2.5 py-3 sm:px-6 sm:py-4"
+            style={{
+              backgroundImage:
+                "radial-gradient(circle at 1px 1px, rgba(17, 27, 33, 0.055) 1px, transparent 0)",
+              backgroundSize: "22px 22px",
+            }}
+          >
 
-            {/* Group welcome card */}
-            <div className="mb-8 flex flex-col items-center text-center">
+            {/* Group intro */}
+            <div className="mx-auto mb-4 flex w-full max-w-md flex-col items-center gap-1.5 rounded-xl bg-white/90 px-4 py-3 text-center shadow-sm">
               <div
-                className={`mb-3 flex h-[66px] w-[66px] items-center justify-center overflow-hidden rounded-[22px] bg-gradient-to-br ${groupColor} text-3xl shadow-sm`}
+                className={`mb-1 flex h-12 w-12 items-center justify-center overflow-hidden rounded-full bg-gradient-to-br ${groupColor} text-xl`}
               >
                 {groupImage ? (
                   <img
@@ -1764,77 +1777,47 @@ function GroupRoomContent({ params }) {
                     className="h-full w-full object-cover"
                   />
                 ) : (
-                  <HandHeart size={30} className="text-[#34875c]" />
+                  <HandHeart size={24} className="text-[#34875c]" />
                 )}
               </div>
 
-              <h2 className="font-[Manrope] text-lg font-extrabold text-[#1c3d30]">
-                Welcome to {group.name}
+              <h2 className="text-[13px] font-semibold text-[#111b21]">
+                {group.name}
               </h2>
 
-              <p className="mt-2 max-w-md text-[11px] leading-6 text-[#8b9990]">
+              <p className="text-[11px] leading-5 text-[#667781]">
                 {group.description ||
                   "A community of believers coming together to pray, encourage one another and grow in God's Word."}
               </p>
 
-              <div className="mt-3 flex items-center gap-2 rounded-full bg-[#f5f8f5] px-3 py-1.5 text-[9px] font-semibold text-[#718078]">
+              <div className="flex flex-wrap items-center justify-center gap-1.5 text-[10px] font-medium text-[#667781]">
                 <Users size={12} />
                 {groupMemberCount} members
 
-                <span className="text-[#c0c9c2]">·</span>
+                <span>·</span>
 
-                <ShieldCheck size={12} className="text-[#329568]" />
+                <ShieldCheck size={12} className="text-[#00a884]" />
                 A community of faith
               </div>
+
+              <button
+                onClick={() => setPrayed((current) => !current)}
+                className={`mt-1 inline-flex items-center gap-1.5 rounded-full px-3 py-1.5 text-[11px] font-semibold transition ${
+                  prayed
+                    ? "bg-[#d9fdd3] text-[#1f7a5c]"
+                    : "bg-[#064e3b] text-white hover:bg-[#043c2d]"
+                }`}
+              >
+                {prayed ? <Check size={13} /> : <Heart size={13} />}
+                {prayed ? "You prayed" : "Pray for this group"}
+              </button>
             </div>
 
-
-            {/* Date separator */}
-            <div className="mb-7 flex items-center gap-4">
-              <div className="h-px flex-1 bg-[#edf0ec]" />
-
-              <span className="text-[9px] font-bold uppercase tracking-[0.17em] text-[#a1aca4]">
+            {/* Chat notice */}
+            <div className="my-3 flex justify-center">
+              <span className="rounded-lg bg-white/90 px-3 py-1 text-[10px] font-semibold uppercase tracking-wide text-[#54656f] shadow-sm">
                 Group conversation
               </span>
-
-              <div className="h-px flex-1 bg-[#edf0ec]" />
-            </div>
-
-
-            {/* Prayer focus card */}
-            <div className="mb-8 rounded-2xl border border-[#dcece1] bg-[#f4faf5] p-4 sm:p-5">
-              <div className="flex flex-col gap-4 sm:flex-row sm:items-center">
-                <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl bg-white text-[#34875c] shadow-sm">
-                  <HandHeart size={23} />
-                </div>
-
-                <div className="min-w-0 flex-1">
-                  <p className="mb-1 text-[9px] font-extrabold tracking-[0.16em] text-[#399568]">
-                    PRAYER COMMUNITY
-                  </p>
-
-                  <h3 className="font-[Manrope] text-sm font-extrabold text-[#244333]">
-                    Growing together in prayer
-                  </h3>
-
-                  <p className="mt-1 text-[10px] leading-5 text-[#829187]">
-                    Let us lift one another before God, encouraging each other
-                    in faith, wisdom, unity and spiritual growth.
-                  </p>
-                </div>
-
-                <button
-                  onClick={() => setPrayed((current) => !current)}
-                  className={`flex shrink-0 items-center justify-center gap-2 rounded-xl px-5 py-3 text-[10px] font-bold transition ${
-                    prayed
-                      ? "border border-[#cce6d4] bg-white text-[#267d50]"
-                      : "bg-[#064e3b] text-white hover:bg-[#043c2d]"
-                  }`}
-                >
-                  {prayed ? <Check size={15} /> : <Heart size={15} />}
-                  {prayed ? "Prayed" : "Pray"}
-                </button>
-              </div>
             </div>
 
 
@@ -1857,152 +1840,152 @@ function GroupRoomContent({ params }) {
 
             {/* Empty conversation */}
             {!messagesLoading && messages.length === 0 && (
-              <div className="rounded-2xl border border-dashed border-[#dce8df] bg-[#fafcf9] px-5 py-12 text-center">
-                <div className="mx-auto mb-4 flex h-12 w-12 items-center justify-center rounded-2xl bg-[#edf7ef] text-[#34875c]">
-                  <MessageCircle size={22} />
-                </div>
-
-                <h3 className="font-[Manrope] text-sm font-extrabold text-[#31503e]">
-                  No messages yet
-                </h3>
-
-                <p className="mt-2 text-[10px] leading-5 text-[#8b9990]">
-                  Be the first to encourage this community. Share a prayer,
-                  scripture or word of encouragement.
-                </p>
+              <div className="mx-auto mb-3 max-w-sm rounded-lg bg-[#ffeecd] px-3 py-2 text-center text-[11px] leading-5 text-[#54656f] shadow-sm">
+                <span className="font-semibold text-[#111b21]">
+                  No messages yet.
+                </span>{" "}
+                Be the first to encourage this community with a prayer,
+                scripture or word of encouragement.
               </div>
             )}
 
 
             {/* Actual Firestore messages */}
-            <div className="space-y-7">
-              {messages.map((item) => {
+            <div className="flex flex-col gap-1">
+              {messages.map((item, index) => {
                 const own = item.senderId === user.uid;
                 const senderName = own
                   ? "You"
                   : item.senderName || "Community member";
 
-                const initials = getInitials(
-                  item.senderName || user.displayName || "User"
-                );
+                const previous = messages[index - 1];
+                const dayLabel = formatDayLabel(item.createdAt);
+                const showDay =
+                  Boolean(dayLabel) &&
+                  dayLabel !==
+                    (previous ? formatDayLabel(previous.createdAt) : "");
 
                 return (
-                  <article
-                    key={item.id}
-                    className={`flex gap-3 ${
-                      own ? "flex-row-reverse" : "flex-row"
-                    }`}
-                  >
-                    <Avatar
-                      initials={initials}
-                      color={
-                        own
-                          ? "bg-emerald-800 text-white"
-                          : "bg-rose-100 text-rose-700"
-                      }
-                      size="h-9 w-9"
-                    />
+                  <Fragment key={item.id}>
+                    {showDay && (
+                      <div className="my-3 flex justify-center">
+                        <span className="rounded-lg bg-white/90 px-3 py-1 text-[10px] font-semibold uppercase tracking-wide text-[#54656f] shadow-sm">
+                          {dayLabel}
+                        </span>
+                      </div>
+                    )}
 
-                    <div
-                      className={`flex min-w-0 max-w-[85%] flex-col ${
-                        own ? "items-end" : "items-start"
+                    <article
+                      className={`flex ${
+                        own ? "justify-end" : "justify-start"
                       }`}
                     >
-                      <div className="mb-2 flex flex-wrap items-center gap-2">
-                        <span className="text-[10px] font-bold text-[#40554a]">
-                          {senderName}
-                        </span>
-
-                        <span className="text-[9px] text-[#a1aca4]">
-                          {formatMessageTime(item.createdAt)}
-                        </span>
-                      </div>
-
                       <div
-                        className={`whitespace-pre-wrap rounded-2xl px-4 py-3 text-[11px] leading-6 ${
+                        className={`group relative max-w-[88%] rounded-lg px-2.5 py-1.5 text-[13px] leading-[1.45] shadow-sm sm:max-w-[75%] ${
                           own
-                            ? "rounded-tr-md bg-[#eaf4ed] text-[#345442]"
-                            : "rounded-tl-md border border-[#edf0ec] bg-[#f7f9f7] text-[#4f6056]"
+                            ? "rounded-tr-none bg-[#d9fdd3] text-[#111b21]"
+                            : "rounded-tl-none bg-white text-[#111b21]"
                         }`}
                       >
-                        {item.text}
-                      </div>
+                        {!own && (
+                          <p className="mb-0.5 text-[11px] font-semibold text-[#1f7a5c]">
+                            {senderName}
+                          </p>
+                        )}
 
-                      <div className="mt-2 flex items-center gap-4">
-                        <button
-                          onClick={() => {
-                            setReplyTo({
-                              name: senderName,
-                              message: item.text,
-                            });
+                        <p className="whitespace-pre-wrap break-words">
+                          {item.text}
+                        </p>
 
-                            document
-                              .getElementById("message-input")
-                              ?.focus();
-                          }}
-                          className="flex items-center gap-1 text-[9px] font-medium text-[#9aa69e] transition hover:text-[#34875c]"
-                        >
-                          <Reply size={12} />
-                          Reply
-                        </button>
+                        <div className="mt-0.5 flex items-center justify-end gap-2">
+                          <div className="flex items-center gap-0.5 transition sm:opacity-0 sm:group-hover:opacity-100 sm:group-focus-within:opacity-100">
+                            <button
+                              onClick={() => {
+                                setReplyTo({
+                                  name: senderName,
+                                  message: item.text,
+                                });
 
-                        <button
-                          onClick={() => toggleLike(item.id)}
-                          className={`flex items-center gap-1 text-[9px] transition ${
-                            likedMessages.includes(item.id)
-                              ? "font-bold text-rose-500"
-                              : "text-[#9aa69e] hover:text-rose-500"
-                          }`}
-                        >
-                          <Heart
-                            size={12}
-                            fill={
-                              likedMessages.includes(item.id)
-                                ? "currentColor"
-                                : "none"
-                            }
-                          />
+                                document
+                                  .getElementById("message-input")
+                                  ?.focus();
+                              }}
+                              aria-label="Reply to message"
+                              title="Reply"
+                              className="flex h-6 w-6 items-center justify-center rounded-full text-[#667781] transition hover:bg-black/5 hover:text-[#1f7a5c]"
+                            >
+                              <Reply size={13} />
+                            </button>
 
-                          {likedMessages.includes(item.id)
-                            ? "Liked"
-                            : "Like"}
-                        </button>
+                            <button
+                              onClick={() => toggleLike(item.id)}
+                              aria-label={
+                                likedMessages.includes(item.id)
+                                  ? "Remove like"
+                                  : "Like message"
+                              }
+                              title="Like"
+                              className={`flex h-6 w-6 items-center justify-center rounded-full transition hover:bg-black/5 ${
+                                likedMessages.includes(item.id)
+                                  ? "text-rose-500"
+                                  : "text-[#667781] hover:text-rose-500"
+                              }`}
+                            >
+                              <Heart
+                                size={13}
+                                fill={
+                                  likedMessages.includes(item.id)
+                                    ? "currentColor"
+                                    : "none"
+                                }
+                              />
+                            </button>
 
-                        {(own || isAdmin) && (
-                          <button
-                            onClick={() => setShowDeleteConfirm(item.id)}
-                            className="text-[9px] font-medium text-[#9aa69e] transition hover:text-red-500"
-                          >
-                            Delete
-                          </button>
+                            {(own || isAdmin) && (
+                              <button
+                                onClick={() => setShowDeleteConfirm(item.id)}
+                                aria-label="Delete message"
+                                title="Delete"
+                                className="flex h-6 w-6 items-center justify-center rounded-full text-[#667781] transition hover:bg-black/5 hover:text-red-600"
+                              >
+                                <Trash2 size={13} />
+                              </button>
+                            )}
+                          </div>
+
+                          <span className="text-[10px] tabular-nums text-[#667781]">
+                            {formatMessageTime(item.createdAt)}
+                          </span>
+                        </div>
+
+                        {showDeleteConfirm === item.id && (
+                          <div className="mt-1.5 flex flex-wrap items-center gap-2 rounded-md border border-red-200 bg-red-50 px-2 py-1.5">
+                            <span className="text-[10px] font-medium text-red-700">
+                              Delete this message?
+                            </span>
+
+                            <button
+                              onClick={() => deleteMessage(item.id)}
+                              className="text-[10px] font-bold text-red-700 underline"
+                            >
+                              Confirm
+                            </button>
+
+                            <button
+                              onClick={() => setShowDeleteConfirm(null)}
+                              className="text-[10px] text-gray-500 underline"
+                            >
+                              Cancel
+                            </button>
+                          </div>
                         )}
                       </div>
-
-                      {showDeleteConfirm === item.id && (
-                        <div className="mt-2 flex items-center gap-2 rounded-lg border border-red-100 bg-red-50 p-2">
-                          <span className="text-[9px] text-red-700">
-                            Delete this message?
-                          </span>
-
-                          <button
-                            onClick={() => deleteMessage(item.id)}
-                            className="text-[9px] font-bold text-red-700"
-                          >
-                            Confirm
-                          </button>
-
-                          <button
-                            onClick={() => setShowDeleteConfirm(null)}
-                            className="text-[9px] text-gray-500"
-                          >
-                            Cancel
-                          </button>
-                        </div>
-                      )}
-                    </div>
-                  </article>
+                    </article>
+                  </Fragment>
                 );
               })}
+
+              <div ref={messagesEndRef} />
             </div>
           </div>
         </div>
@@ -2012,16 +1995,15 @@ function GroupRoomContent({ params }) {
             MESSAGE COMPOSER
         ==================================== */}
 
-        <footer className="shrink-0 border-t border-[#edf0ec] bg-white px-3 py-4 sm:px-6 lg:px-10">
-          <div className="mx-auto max-w-[850px]">
+        <footer className="shrink-0 border-t border-[#e9edef] bg-[#f0f2f5] px-2 py-2 sm:px-4">
+          <div className="mx-auto max-w-3xl">
 
             {replyTo && (
-              <div className="mb-3 flex items-center justify-between rounded-xl bg-[#f2f8f3] px-4 py-2.5">
-                <div className="min-w-0 text-[10px] text-[#718078]">
-                  Replying to{" "}
-                  <span className="font-bold text-[#276b46]">
-                    {replyTo.name}
-                  </span>
+              <div className="mb-2 flex items-start justify-between gap-3 rounded-lg border-l-4 border-[#00a884] bg-[#d9fdd3] px-3 py-2">
+                <div className="min-w-0 text-[11px] text-[#54656f]">
+                  <p className="font-semibold text-[#1f7a5c]">
+                    Replying to {replyTo.name}
+                  </p>
 
                   <p className="truncate">{replyTo.message}</p>
                 </div>
@@ -2029,7 +2011,7 @@ function GroupRoomContent({ params }) {
                 <button
                   onClick={() => setReplyTo(null)}
                   aria-label="Cancel reply"
-                  className="ml-3 text-[#8b9990]"
+                  className="ml-2 shrink-0 text-[#54656f] hover:text-[#111b21]"
                 >
                   <X size={16} />
                 </button>
@@ -2038,76 +2020,61 @@ function GroupRoomContent({ params }) {
 
             <form
               onSubmit={sendMessage}
-              className="flex items-center gap-2 sm:gap-3"
+              className="flex items-end gap-2"
             >
-              <div className="flex min-w-0 flex-1 items-center rounded-2xl border border-[#e9eee9] bg-[#f8faf8] px-3 transition focus-within:border-[#a7d3b5] focus-within:bg-white sm:px-4">
+              <div className="relative flex min-w-0 flex-1 items-center rounded-full bg-white px-1 shadow-sm">
+                <button
+                  type="button"
+                  onClick={() => setShowEmojiPicker((visible) => !visible)}
+                  aria-label="Add emoji"
+                  aria-expanded={showEmojiPicker}
+                  className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full text-[#54656f] transition hover:bg-[#f0f2f5]"
+                >
+                  <Smile size={20} />
+                </button>
+
+                {showEmojiPicker && (
+                  <div className="absolute bottom-12 left-0 z-30 grid w-64 grid-cols-6 gap-1 rounded-xl border border-[#e9edef] bg-white p-2 shadow-xl">
+                    {MESSAGE_EMOJIS.map((emoji) => (
+                      <button
+                        key={emoji}
+                        type="button"
+                        onClick={() => insertEmoji(emoji)}
+                        aria-label={`Insert ${emoji}`}
+                        className="flex h-9 items-center justify-center rounded-lg text-lg hover:bg-[#f0f2f5]"
+                      >
+                        {emoji}
+                      </button>
+                    ))}
+                  </div>
+                )}
+
                 <input
                   ref={messageInputRef}
                   id="message-input"
                   value={message}
                   onChange={(event) => setMessage(event.target.value)}
                   maxLength={3000}
-                  placeholder={`Write a message to ${group.name}...`}
-                  className="h-[48px] min-w-0 flex-1 bg-transparent text-[11px] text-[#40554a] outline-none placeholder:text-[#a1aca4]"
+                  placeholder={`Message ${group.name}`}
+                  className="h-11 min-w-0 flex-1 bg-transparent px-1 text-[13px] text-[#111b21] outline-none placeholder:text-[#8696a0]"
                 />
-
-                <div className="relative">
-                  <button
-                    type="button"
-                    onClick={() => setShowEmojiPicker((visible) => !visible)}
-                    aria-label="Add emoji"
-                    aria-expanded={showEmojiPicker}
-                    className="shrink-0 p-2 text-[#96a39a] transition hover:text-[#34875c]"
-                  >
-                    <Smile size={17} />
-                  </button>
-                  {showEmojiPicker && (
-                    <div className="absolute bottom-12 right-0 z-30 grid w-64 grid-cols-6 gap-1 rounded-xl border border-[#e4ebe5] bg-white p-2 shadow-xl">
-                      {MESSAGE_EMOJIS.map((emoji) => (
-                        <button
-                          key={emoji}
-                          type="button"
-                          onClick={() => insertEmoji(emoji)}
-                          aria-label={`Insert ${emoji}`}
-                          className="flex h-9 items-center justify-center rounded-lg text-lg hover:bg-[#f1f7f2]"
-                        >
-                          {emoji}
-                        </button>
-                      ))}
-                    </div>
-                  )}
-                </div>
               </div>
 
               <button
                 type="submit"
                 aria-label="Send message"
                 disabled={!message.trim() || sending}
-                className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl bg-[#064e3b] text-white shadow-sm transition hover:bg-[#043c2d] disabled:cursor-not-allowed disabled:opacity-40"
+                className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full bg-[#00a884] text-white shadow-sm transition hover:bg-[#008f72] disabled:cursor-not-allowed disabled:opacity-50"
               >
                 {sending ? (
-                  <LoaderCircle size={17} className="animate-spin" />
+                  <LoaderCircle size={18} className="animate-spin" />
                 ) : (
-                  <Send size={17} />
+                  <Send size={18} />
                 )}
-              </button>
-
-              <button
-                type="button"
-                onClick={() =>
-                  showNotice("Need help? Help and support will be available here.")
-                }
-                aria-label="Help"
-                className="hidden h-10 w-10 shrink-0 items-center justify-center rounded-full text-[#a0aaa3] transition hover:bg-[#f4f7f4] hover:text-[#064e3b] sm:flex"
-              >
-                <HelpCircle size={19} />
               </button>
             </form>
 
-            <p className="mt-2 hidden text-center text-[9px] text-[#b0bab2] sm:block">
-              Share encouragement, pray for one another and build each other up.
-            </p>
-            <p className="mt-1 text-center text-[9px] text-[#b0bab2]">
+            <p className="mt-1.5 text-center text-[10px] text-[#8696a0]">
               Photo attachments are temporarily unavailable
             </p>
           </div>
@@ -2520,58 +2487,110 @@ function GroupRoomContent({ params }) {
         </div>
       )}
 
-      {showGroupSettings && isAdmin && (
+      {showGroupSettings && isGroupOwner && (
         <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/40 p-4">
-          <section className="w-full max-w-lg rounded-2xl bg-white p-6 shadow-2xl">
-            <div className="mb-5 flex items-start justify-between">
+          <section className="max-h-[90vh] w-full max-w-lg overflow-y-auto rounded-2xl bg-white shadow-2xl">
+            <header className="flex items-start justify-between gap-4 border-b border-[#e9edef] bg-[#f0f2f5] px-5 py-4">
               <div>
-                <p className="text-[10px] font-bold uppercase tracking-wider text-[#329568]">Group administration</p>
-                <h2 className="mt-2 text-xl font-bold text-[#064e3b]">Group settings</h2>
-                <p className="mt-1 text-xs text-gray-500">Update the description and group visibility.</p>
+                <p className="text-[10px] font-bold uppercase tracking-[0.16em] text-[#00a884]">
+                  Chat settings
+                </p>
+                <h2 className="mt-1 text-lg font-bold text-[#111b21]">
+                  Group settings
+                </h2>
+                <p className="mt-1 text-[11px] text-[#667781]">
+                  Update how this prayer group appears to its members.
+                </p>
               </div>
-              <button onClick={() => setShowGroupSettings(false)} aria-label="Close settings" className="rounded-lg p-2 text-gray-400 hover:bg-gray-100">
+              <button
+                onClick={() => setShowGroupSettings(false)}
+                aria-label="Close settings"
+                className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full text-[#54656f] transition hover:bg-[#e2e6e8]"
+              >
                 <X size={19} />
               </button>
-            </div>
-            <form onSubmit={saveGroupSettings} className="space-y-4">
+            </header>
+
+            <form onSubmit={saveGroupSettings} className="space-y-4 px-5 py-5">
               <label className="block text-xs font-bold text-gray-700">
                 Group name
-                <input value={group.name || ""} readOnly className="mt-2 w-full rounded-xl border border-gray-200 bg-gray-50 px-4 py-3 text-sm text-gray-500" />
+                <input
+                  value={group.name || ""}
+                  readOnly
+                  className="mt-2 w-full rounded-xl border border-gray-200 bg-gray-50 px-4 py-3 text-sm text-gray-500"
+                />
               </label>
+
               <label className="block text-xs font-bold text-gray-700">
-                Description
+                <span className="flex items-center justify-between">
+                  Description
+                  <span className="font-medium text-gray-400">
+                    {settingsDescription.length}/300
+                  </span>
+                </span>
                 <textarea
                   maxLength={300}
                   rows={4}
                   value={settingsDescription}
-                  onChange={(event) => setSettingsDescription(event.target.value)}
-                  className="mt-2 w-full resize-y rounded-xl border border-gray-200 px-4 py-3 text-sm outline-none focus:border-[#329568]"
+                  onChange={(event) =>
+                    setSettingsDescription(event.target.value)
+                  }
+                  className="mt-2 w-full resize-y rounded-xl border border-gray-200 px-4 py-3 text-sm outline-none focus:border-[#00a884]"
                 />
               </label>
+
               <label className="block text-xs font-bold text-gray-700">
                 Visibility
                 <select
                   value={settingsPrivacy}
                   onChange={(event) => setSettingsPrivacy(event.target.value)}
-                  className="mt-2 w-full rounded-xl border border-gray-200 px-4 py-3 text-sm outline-none focus:border-[#329568]"
+                  className="mt-2 w-full rounded-xl border border-gray-200 px-4 py-3 text-sm outline-none focus:border-[#00a884]"
                 >
                   <option value="Public">Public</option>
                   <option value="Private">Private</option>
                 </select>
               </label>
+
               {settingsPrivacy === "Private" && (
                 <p className="rounded-xl bg-amber-50 p-3 text-xs leading-5 text-amber-800">
-                  Private groups are removed from public discovery. Current members retain access.
+                  Private groups are removed from public discovery. Current
+                  members retain access.
                 </p>
               )}
-              {settingsError && <p role="alert" className="rounded-xl border border-red-200 bg-red-50 p-3 text-xs text-red-700">{settingsError}</p>}
-              <div className="flex justify-end gap-3 pt-2">
-                <button type="button" onClick={() => setShowGroupSettings(false)} className="rounded-xl border border-gray-200 px-4 py-2.5 text-xs font-bold text-gray-600">
-                  Cancel
-                </button>
-                <button type="submit" disabled={savingSettings} className="rounded-xl bg-[#064e3b] px-5 py-2.5 text-xs font-bold text-white disabled:opacity-60">
-                  {savingSettings ? "Saving..." : "Save settings"}
-                </button>
+
+              {settingsError && (
+                <p
+                  role="alert"
+                  className="rounded-xl border border-red-200 bg-red-50 p-3 text-xs text-red-700"
+                >
+                  {settingsError}
+                </p>
+              )}
+
+              <div className="flex items-center justify-between gap-3 pt-2">
+                <p className="text-[10px] leading-4 text-gray-400">
+                  Only the group owner can change these settings.
+                </p>
+
+                <div className="flex shrink-0 gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setShowGroupSettings(false)}
+                    className="rounded-xl border border-gray-200 px-4 py-2.5 text-xs font-bold text-gray-600"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="submit"
+                    disabled={savingSettings}
+                    className="flex items-center gap-2 rounded-xl bg-[#00a884] px-5 py-2.5 text-xs font-bold text-white transition hover:bg-[#008f72] disabled:opacity-60"
+                  >
+                    {savingSettings && (
+                      <LoaderCircle size={14} className="animate-spin" />
+                    )}
+                    {savingSettings ? "Saving..." : "Save settings"}
+                  </button>
+                </div>
               </div>
             </form>
           </section>
