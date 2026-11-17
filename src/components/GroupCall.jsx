@@ -23,8 +23,26 @@ import {
 import { db } from "@/lib/firebase";
 import { stopRingtone, setCallAudioActive } from "@/lib/sound";
 
+// A TURN relay can be supplied through environment variables when the app is
+// deployed. Without it some mobile networks cannot connect the two browsers at
+// all, which is heard as "nobody can hear me".
+const turnUrl = process.env.NEXT_PUBLIC_TURN_URL;
+
 const rtcConfiguration = {
-  iceServers: [{ urls: "stun:stun.l.google.com:19302" }],
+  iceServers: [
+    { urls: "stun:stun.l.google.com:19302" },
+    { urls: "stun:stun1.l.google.com:19302" },
+    ...(turnUrl
+      ? [
+          {
+            urls: turnUrl,
+            username: process.env.NEXT_PUBLIC_TURN_USERNAME || "",
+            credential: process.env.NEXT_PUBLIC_TURN_CREDENTIAL || "",
+          },
+        ]
+      : []),
+  ],
+  iceCandidatePoolSize: 4,
 };
 
 // The tab that starts or joins a call marks it here so the global incoming
@@ -98,31 +116,73 @@ function markCallPending(groupId) {
   }
 }
 
-function MediaTile({ stream, label, muted = false, audioOnly = false }) {
+function MediaTile({
+  stream,
+  label,
+  muted = false,
+  audioOnly = false,
+  variant = "grid",
+}) {
   const videoRef = useRef(null);
   const audioRef = useRef(null);
+  const [needsAudioTap, setNeedsAudioTap] = useState(false);
 
   useEffect(() => {
     if (videoRef.current) videoRef.current.srcObject = stream || null;
 
     const audio = audioRef.current;
 
-    if (!audio) return;
+    if (!audio) return undefined;
 
     audio.srcObject = stream || null;
 
-    // Mobile browsers can ignore autoplay when srcObject is assigned after
-    // mount, which leaves the other members silent. Ask for playback
-    // explicitly on every new stream.
-    if (stream) {
-      const attempt = audio.play();
+    if (!stream) {
+      queueMicrotask(() => setNeedsAudioTap(false));
+      return undefined;
+    }
 
-      if (attempt && typeof attempt.catch === "function") {
-        attempt.catch(() => {
-          // Playback will be retried when the user interacts with the page.
-        });
+    let cancelled = false;
+
+    // Mobile browsers can ignore autoplay when srcObject is assigned after
+    // mount, which leaves the other members silent. Ask for playback on every
+    // new stream and retry on the next interaction if the browser refuses.
+    function attemptPlayback() {
+      if (cancelled) return;
+
+      try {
+        const attempt = audio.play();
+
+        if (attempt && typeof attempt.then === "function") {
+          attempt
+            .then(() => {
+              if (!cancelled) setNeedsAudioTap(false);
+            })
+            .catch(() => {
+              if (!cancelled) setNeedsAudioTap(true);
+            });
+        }
+      } catch {
+        if (!cancelled) setNeedsAudioTap(true);
       }
     }
+
+    function handleVisibilityChange() {
+      if (document.visibilityState === "visible") attemptPlayback();
+    }
+
+    attemptPlayback();
+    window.addEventListener("pointerdown", attemptPlayback);
+    window.addEventListener("touchstart", attemptPlayback, { passive: true });
+    window.addEventListener("keydown", attemptPlayback);
+    document.addEventListener("visibilitychange", handleVisibilityChange);
+
+    return () => {
+      cancelled = true;
+      window.removeEventListener("pointerdown", attemptPlayback);
+      window.removeEventListener("touchstart", attemptPlayback);
+      window.removeEventListener("keydown", attemptPlayback);
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
+    };
   }, [stream, audioOnly]);
 
   const initials = label
@@ -132,31 +192,91 @@ function MediaTile({ stream, label, muted = false, audioOnly = false }) {
     .join("")
     .toUpperCase();
 
+  const hasVideo = Boolean(
+    stream && stream.getVideoTracks().some((track) => track.readyState === "live")
+  );
+  const showVideo = hasVideo && !audioOnly;
+
+  const wrapperClass =
+    variant === "stage"
+      ? "absolute inset-0 overflow-hidden bg-[#0b1210]"
+      : variant === "pip"
+        ? "relative h-40 w-28 overflow-hidden rounded-2xl border border-white/20 bg-[#1d2925] shadow-2xl sm:h-48 sm:w-36"
+        : "relative aspect-video min-h-48 overflow-hidden rounded-2xl bg-[#1d2925]";
+
   return (
-    <div className="relative aspect-video min-h-48 overflow-hidden rounded-2xl bg-[#1d2925]">
-      {stream && !audioOnly && (
+    <div className={wrapperClass}>
+      {/* The video element stays mounted whenever a stream exists so adding a
+          track later (camera switched on mid-call) paints without a remount. */}
+      {stream && (
         <video
           ref={videoRef}
           autoPlay
           playsInline
           muted
-          className="h-full w-full object-cover"
+          className={`h-full w-full object-cover ${showVideo ? "" : "hidden"}`}
         />
       )}
       {stream && (
         <audio ref={audioRef} autoPlay playsInline muted={muted} className="sr-only" />
       )}
-      {(!stream || audioOnly) && (
-        <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 text-white">
-          <div className="flex h-20 w-20 items-center justify-center rounded-full bg-gradient-to-br from-emerald-500 to-teal-700 text-2xl font-semibold shadow-lg">
+      {needsAudioTap && !muted && (
+        <button
+          type="button"
+          onClick={() => {
+            const audio = audioRef.current;
+            if (!audio) return;
+
+            audio
+              .play()
+              .then(() => setNeedsAudioTap(false))
+              .catch(() => {});
+          }}
+          className={`absolute z-30 rounded-full bg-emerald-600 px-4 py-2 text-xs font-bold text-white shadow-lg ${
+            variant === "stage"
+              ? "left-1/2 top-24 -translate-x-1/2"
+              : "right-3 top-3"
+          }`}
+        >
+          Tap to hear
+        </button>
+      )}
+      {!showVideo && (
+        <div
+          className={`absolute inset-0 flex flex-col items-center justify-center gap-3 text-white ${
+            variant === "stage"
+              ? "bg-gradient-to-b from-[#16211d] to-[#0a100e]"
+              : ""
+          }`}
+        >
+          <div
+            className={`flex items-center justify-center rounded-full bg-gradient-to-br from-emerald-500 to-teal-700 font-semibold shadow-lg ${
+              variant === "stage"
+                ? "h-24 w-24 text-3xl sm:h-28 sm:w-28"
+                : variant === "pip"
+                  ? "h-12 w-12 text-sm"
+                  : "h-20 w-20 text-2xl"
+            }`}
+          >
             {initials}
           </div>
-          <span className="text-sm text-white/70">{audioOnly ? "Voice call" : "Camera off"}</span>
+          {variant !== "pip" && (
+            <div className="text-center">
+              {variant === "stage" && (
+                <p className="text-lg font-semibold">{label}</p>
+              )}
+              <span className="text-sm text-white/60">
+                {audioOnly ? "Voice call" : "Camera off"}
+              </span>
+            </div>
+          )}
         </div>
       )}
-      <span className="absolute bottom-3 left-3 rounded-lg bg-black/45 px-3 py-1.5 text-xs font-medium text-white backdrop-blur-sm">
-        {label}
-      </span>
+      {variant !== "stage" && (
+        <span className="absolute bottom-3 left-3 max-w-[calc(100%-1.5rem)] truncate rounded-lg bg-black/45 px-3 py-1.5 text-xs font-medium text-white backdrop-blur-sm">
+          {label}
+        </span>
+      )}
     </div>
   );
 }
@@ -177,8 +297,14 @@ export default function GroupCall({ groupId, groupName, user, canJoin }) {
   const candidateListeners = useRef(new Map());
   const pendingOffers = useRef(new Set());
   const connectionPeers = useRef(new Map());
+  // The video sender of each peer connection, kept so a camera that starts
+  // later (voice call switched to video) can be plugged in without another
+  // negotiation. Looking it up through the receiver only works after the
+  // remote description exists, which is not guaranteed at that point.
+  const videoSenders = useRef(new Map());
   const autoJoinedCallRef = useRef("");
   const joinCallRef = useRef(null);
+  const micRecoveryRef = useRef(false);
 
   useEffect(() => {
     if (!callId) return undefined;
@@ -195,6 +321,85 @@ export default function GroupCall({ groupId, groupName, user, canJoin }) {
     setCallAudioActive(Boolean(callId));
     return () => setCallAudioActive(false);
   }, [callId]);
+
+  // Mobile browsers can end the microphone track when another app takes the
+  // audio focus (a phone call, the ringtone, or the screen locking). When that
+  // happens everyone stops hearing the user. Re-acquire the microphone and
+  // plug it into the existing peer connections without renegotiating.
+  useEffect(() => {
+    if (!callId || !localStream) return undefined;
+    if (!navigator.mediaDevices?.getUserMedia) return undefined;
+
+    let cancelled = false;
+
+    async function restoreMicrophone() {
+      if (cancelled || micRecoveryRef.current) return;
+      micRecoveryRef.current = true;
+
+      try {
+        const micStream = await navigator.mediaDevices.getUserMedia({
+          audio: true,
+          video: false,
+        });
+        const nextTrack = micStream.getAudioTracks()[0];
+
+        if (!nextTrack) {
+          micStream.getTracks().forEach((track) => track.stop());
+          return;
+        }
+
+        if (cancelled) {
+          nextTrack.stop();
+          return;
+        }
+
+        nextTrack.enabled = true;
+        localStream.getAudioTracks().forEach((track) => {
+          localStream.removeTrack(track);
+          track.stop();
+        });
+        localStream.addTrack(nextTrack);
+
+        await Promise.all(
+          [...connections.current.values()].map((connection) => {
+            const audioSender =
+              connection
+                .getSenders()
+                .find((sender) => sender.track?.kind === "audio") ||
+              connection
+                .getTransceivers()
+                .find((transceiver) => transceiver.receiver.track?.kind === "audio")
+                ?.sender;
+
+            return audioSender
+              ? audioSender.replaceTrack(nextTrack)
+              : Promise.resolve();
+          })
+        );
+      } catch (micError) {
+        console.error("Restoring the group call microphone failed:", micError);
+        setError(
+          "Your microphone stopped. Check the microphone permission, then leave and rejoin the call."
+        );
+      } finally {
+        micRecoveryRef.current = false;
+      }
+    }
+
+    const cleanups = localStream.getAudioTracks().map((track) => {
+      const handleEnded = () => {
+        restoreMicrophone();
+      };
+
+      track.addEventListener("ended", handleEnded);
+      return () => track.removeEventListener("ended", handleEnded);
+    });
+
+    return () => {
+      cancelled = true;
+      cleanups.forEach((cleanup) => cleanup());
+    };
+  }, [callId, localStream]);
 
   useEffect(() => {
     if (!groupId || !canJoin) return undefined;
@@ -259,7 +464,9 @@ export default function GroupCall({ groupId, groupName, user, canJoin }) {
     const activeCandidateListeners = candidateListeners.current;
     const activePendingOffers = pendingOffers.current;
     const activeConnectionPeers = connectionPeers.current;
+    const activeVideoSenders = videoSenders.current;
     const participantNames = new Map();
+    const remoteStreamsByUid = new Map();
     let sessionStartMillis = 0;
     const callRef = doc(db, "prayerGroups", groupId, "calls", callId);
     const participantsRef = collection(callRef, "participants");
@@ -277,10 +484,13 @@ export default function GroupCall({ groupId, groupName, user, canJoin }) {
         connections.current.delete(signalId);
       }
 
+      videoSenders.current.delete(signalId);
+
       const remoteUid = connectionPeers.current.get(signalId);
 
       if (remoteUid) {
         connectionPeers.current.delete(signalId);
+        remoteStreamsByUid.delete(remoteUid);
 
         // Re-enable offers to this peer so a rejoin can negotiate again.
         if (![...connectionPeers.current.values()].includes(remoteUid)) {
@@ -317,13 +527,56 @@ export default function GroupCall({ groupId, groupName, user, canJoin }) {
       const pc = new RTCPeerConnection(rtcConfiguration);
       connections.current.set(signalId, pc);
       connectionPeers.current.set(signalId, remoteUid);
-      localStream.getAudioTracks().forEach((track) => pc.addTrack(track, localStream));
-      const localVideoTrack = localStream.getVideoTracks()[0];
-      pc.addTransceiver(localVideoTrack || "video", { direction: "sendrecv" });
+      const localAudioTracks = localStream.getAudioTracks();
+      localAudioTracks.forEach((track) => {
+        track.enabled = true;
+        pc.addTrack(track, localStream);
+      });
 
+      // Keep an audio m-line even when the microphone is being restored, so a
+      // replacement track can be sent without another negotiation.
+      if (localAudioTracks.length === 0) {
+        pc.addTransceiver("audio", {
+          direction: "sendrecv",
+          streams: [localStream],
+        });
+      }
+
+      // The video transceiver always exists (even before a camera track is
+      // available) so the camera can be switched on later with replaceTrack.
+      // `streams` groups it with the audio track under one MediaStream id,
+      // which is what lets the remote side attach both to a single stream.
+      const localVideoTrack = localStream.getVideoTracks()[0];
+      const videoTransceiver = pc.addTransceiver(localVideoTrack || "video", {
+        direction: "sendrecv",
+        streams: [localStream],
+      });
+      videoSenders.current.set(signalId, videoTransceiver.sender);
+
+      // A track added through addTransceiver can arrive without an associated
+      // stream, so tracks are assembled per participant instead of relying on
+      // event.streams. Without this the remote video track was dropped and
+      // only voice worked.
       pc.ontrack = (event) => {
-        const stream = event.streams[0];
-        if (!stream) return;
+        if (event.track.kind === "video") {
+          event.track.contentHint = "motion";
+        }
+
+        let stream = remoteStreamsByUid.get(remoteUid);
+
+        if (!stream) {
+          stream = new MediaStream();
+          remoteStreamsByUid.set(remoteUid, stream);
+        }
+
+        if (!stream.getTracks().some((track) => track.id === event.track.id)) {
+          stream.addTrack(event.track);
+        }
+
+        event.track.addEventListener("ended", () => {
+          stream.removeTrack(event.track);
+        });
+
         setRemoteStreams((current) => {
           const next = current.filter((item) => item.uid !== remoteUid);
           return [
@@ -520,6 +773,8 @@ export default function GroupCall({ groupId, groupName, user, canJoin }) {
       activeConnections.clear();
       activeConnectionPeers.clear();
       activePendingOffers.clear();
+      activeVideoSenders.clear();
+      remoteStreamsByUid.clear();
       setRemoteStreams([]);
     };
   }, [callId, localStream, groupId, user]);
@@ -529,10 +784,31 @@ export default function GroupCall({ groupId, groupName, user, canJoin }) {
       throw new Error("This browser does not support voice or video calls.");
     }
 
+    // A call without a live microphone track is silent for everybody else, so
+    // fail loudly instead of joining a one-way call.
+    async function requestStream(constraints) {
+      const stream = await navigator.mediaDevices.getUserMedia(constraints);
+      const audioTrack = stream.getAudioTracks()[0];
+
+      if (!audioTrack) {
+        stream.getTracks().forEach((track) => track.stop());
+        throw new Error(
+          "No microphone was found. Check the microphone permission and that a microphone is connected."
+        );
+      }
+
+      audioTrack.enabled = true;
+      return stream;
+    }
+
     try {
       return {
-        stream: await navigator.mediaDevices.getUserMedia({
-          audio: true,
+        stream: await requestStream({
+          audio: {
+            echoCancellation: true,
+            noiseSuppression: true,
+            autoGainControl: true,
+          },
           video: type === "video",
         }),
         cameraUnavailable: false,
@@ -542,8 +818,12 @@ export default function GroupCall({ groupId, groupName, user, canJoin }) {
 
       console.warn("Starting video failed; trying an audio-only call:", mediaError);
       return {
-        stream: await navigator.mediaDevices.getUserMedia({
-          audio: true,
+        stream: await requestStream({
+          audio: {
+            echoCancellation: true,
+            noiseSuppression: true,
+            autoGainControl: true,
+          },
           video: false,
         }),
         cameraUnavailable: true,
@@ -679,11 +959,17 @@ export default function GroupCall({ groupId, groupName, user, canJoin }) {
 
     try {
       await Promise.all(
-        [...connections.current.values()].map((connection) => {
-          const videoSender = connection
-            .getTransceivers()
-            .find((transceiver) => transceiver.receiver.track.kind === "video")
-            ?.sender;
+        [...connections.current.entries()].map(([signalId, connection]) => {
+          const videoSender =
+            videoSenders.current.get(signalId) ||
+            connection
+              .getTransceivers()
+              .find(
+                (transceiver) =>
+                  transceiver.receiver.track?.kind === "video" ||
+                  transceiver.sender.track?.kind === "video"
+              )?.sender;
+
           return videoSender ? videoSender.replaceTrack(track) : Promise.resolve();
         })
       );
@@ -762,6 +1048,7 @@ export default function GroupCall({ groupId, groupName, user, canJoin }) {
     setLocalStream(null);
     setCallId("");
     clearActiveCallMark();
+    setShowParticipants(false);
     setRemoteStreams([]);
   }
 
@@ -822,60 +1109,113 @@ export default function GroupCall({ groupId, groupName, user, canJoin }) {
       </div>
       {error && <p role="alert" className="fixed bottom-4 right-4 z-[130] max-w-sm rounded-xl border border-red-200 bg-red-50 p-3 text-xs text-red-700 shadow-lg">{error}</p>}
       {callId && (
-        <div className="fixed inset-0 z-[120] flex flex-col bg-[#101714] text-white">
-          <header className="flex min-h-16 items-center justify-between border-b border-white/10 px-4 sm:px-7">
-            <div className="min-w-0">
-              <p className="truncate text-sm font-semibold sm:text-base">{groupName}</p>
-              <p className="mt-0.5 text-xs capitalize text-white/55">{callType} prayer call</p>
-            </div>
-            <div className="flex items-center gap-2 sm:gap-4">
-              <span className="rounded-full bg-white/10 px-3 py-1.5 text-xs tabular-nums text-white/80">{elapsedLabel}</span>
+        <div className="fixed inset-0 z-[120] flex flex-col bg-[#0a100e] text-white">
+          <main className="relative flex min-h-0 flex-1 overflow-hidden">
+            {/* Stage: the remote speaker fills the screen, like WhatsApp */}
+            {remoteStreams.length === 0 &&
+              (callType === "video" && localStream ? (
+                <>
+                  {/* While waiting, WhatsApp shows your own camera full-screen. */}
+                  <MediaTile
+                    variant="stage"
+                    stream={localStream}
+                    label="You"
+                    muted
+                    audioOnly={cameraOff}
+                  />
+                  <div className="pointer-events-none absolute inset-x-0 bottom-32 z-10 flex flex-col items-center gap-1 text-center">
+                    <p className="text-sm font-semibold drop-shadow">You’re in the call</p>
+                    <p className="text-xs text-white/60 drop-shadow">
+                      Waiting for someone to join
+                    </p>
+                  </div>
+                </>
+              ) : (
+                <div className="absolute inset-0 flex flex-col items-center justify-center gap-4 bg-gradient-to-b from-[#16211d] to-[#0a100e] text-center">
+                  <div className="flex h-20 w-20 items-center justify-center rounded-full bg-white/10">
+                    <Users size={30} className="text-white/70" />
+                  </div>
+                  <div>
+                    <p className="text-base font-semibold">You’re in the call</p>
+                    <p className="mt-1 text-sm text-white/50">Invite group members to join</p>
+                  </div>
+                </div>
+              ))}
+
+            {remoteStreams.length === 1 && (
+              <MediaTile
+                variant="stage"
+                stream={remoteStreams[0].stream}
+                label={remoteStreams[0].name || "Group member"}
+                audioOnly={callType === "audio"}
+              />
+            )}
+
+            {remoteStreams.length > 1 && (
+              <div className="grid h-full w-full auto-rows-fr grid-cols-1 gap-2 overflow-y-auto bg-[#0a100e] px-2 pb-28 pt-24 sm:grid-cols-2 sm:px-3">
+                {remoteStreams.map((item) => (
+                  <MediaTile
+                    key={item.uid}
+                    stream={item.stream}
+                    label={item.name || "Group member"}
+                    audioOnly={callType === "audio"}
+                  />
+                ))}
+              </div>
+            )}
+
+            {/* Header overlay */}
+            <header className="pointer-events-none absolute inset-x-0 top-0 z-20 flex items-start justify-between gap-3 bg-gradient-to-b from-black/80 via-black/40 to-transparent px-4 pb-12 pt-4 sm:px-6">
+              <div className="min-w-0">
+                <p className="truncate text-sm font-semibold sm:text-base">{groupName}</p>
+                <p className="mt-0.5 text-xs text-white/60">
+                  {callType === "video" ? "Video" : "Voice"} prayer call ·{" "}
+                  <span className="tabular-nums">{elapsedLabel}</span>
+                </p>
+              </div>
               <button
                 onClick={() => setShowParticipants((visible) => !visible)}
                 aria-label="Toggle participant list"
                 title="Participants"
-                className={`flex h-10 items-center gap-2 rounded-xl px-3 text-sm transition ${showParticipants ? "bg-white/20" : "bg-white/10 hover:bg-white/15"}`}
+                className={`pointer-events-auto flex h-10 items-center gap-2 rounded-full px-3 text-sm backdrop-blur transition ${
+                  showParticipants
+                    ? "bg-white/25"
+                    : "bg-black/40 hover:bg-black/55"
+                }`}
               >
                 <Users size={17} />
                 <span>{remoteStreams.length + 1}</span>
               </button>
-            </div>
-          </header>
+            </header>
 
-          <main className="relative flex min-h-0 flex-1 items-center justify-center gap-4 overflow-auto p-3 sm:p-6">
-            <div className="grid w-full min-w-0 max-w-6xl flex-1 grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
-              <MediaTile
-                stream={localStream}
-                label="You"
-                muted
-                audioOnly={callType === "audio" || cameraOff}
-              />
-              {remoteStreams.map((item) => (
+            {/* Self view, top-right like WhatsApp. Hidden in voice calls and
+                while the participant drawer is open, which is what WhatsApp
+                does (and it keeps both from fighting for space on phones). */}
+            {callType === "video" &&
+              remoteStreams.length > 0 &&
+              !showParticipants && (
+              <div className="absolute right-3 top-[4.5rem] z-10 sm:right-5 sm:top-20">
                 <MediaTile
-                  key={item.uid}
-                  stream={item.stream}
-                  label={item.name || "Group member"}
-                  audioOnly={callType === "audio"}
+                  variant="pip"
+                  stream={localStream}
+                  label="You"
+                  muted
+                  audioOnly={cameraOff}
                 />
-              ))}
-              {remoteStreams.length === 0 && (
-                <div className="flex aspect-video min-h-48 flex-col items-center justify-center gap-3 rounded-2xl border border-white/10 bg-white/[0.04] text-center">
-                  <div className="flex h-14 w-14 items-center justify-center rounded-full bg-white/10">
-                    <Users size={23} className="text-white/70" />
-                  </div>
-                  <div>
-                    <p className="text-sm font-medium">You’re in the call</p>
-                    <p className="mt-1 text-xs text-white/50">Invite group members to join</p>
-                  </div>
-                </div>
-              )}
-            </div>
+              </div>
+            )}
+
+            {/* Participants drawer */}
             {showParticipants && (
-              <aside className="absolute inset-x-3 top-3 z-10 max-h-[calc(100%-1.5rem)] overflow-auto rounded-2xl border border-white/10 bg-[#19231f] p-5 md:relative md:inset-auto md:h-full md:max-h-none md:w-72 md:shrink-0">
-                <h3 className="mb-5 text-sm font-semibold">People ({remoteStreams.length + 1})</h3>
+              <aside className="absolute bottom-28 left-3 top-[4.5rem] z-30 w-[min(18rem,calc(100%-1.5rem))] overflow-auto rounded-2xl border border-white/10 bg-[#141d19]/95 p-5 backdrop-blur sm:left-5">
+                <h3 className="mb-5 text-sm font-semibold">
+                  People ({remoteStreams.length + 1})
+                </h3>
                 <ul className="space-y-4">
                   <li className="flex items-center gap-3 text-sm">
-                    <span className="flex h-9 w-9 items-center justify-center rounded-full bg-emerald-700 text-xs font-semibold">You</span>
+                    <span className="flex h-9 w-9 items-center justify-center rounded-full bg-emerald-700 text-xs font-semibold">
+                      You
+                    </span>
                     <span>You</span>
                     {muted && <MicOff size={15} className="ml-auto text-white/50" />}
                   </li>
@@ -890,45 +1230,46 @@ export default function GroupCall({ groupId, groupName, user, canJoin }) {
                 </ul>
               </aside>
             )}
-          </main>
 
-          <footer className="flex min-h-20 items-center justify-center gap-2 border-t border-white/10 px-3 sm:gap-3">
-            <button
-              onClick={toggleAudio}
-              aria-label={muted ? "Unmute microphone" : "Mute microphone"}
-              title={muted ? "Unmute microphone" : "Mute microphone"}
-              className={`flex h-12 w-12 items-center justify-center rounded-full transition ${muted ? "bg-red-500 text-white" : "bg-white/10 text-white hover:bg-white/20"}`}
-            >
-              {muted ? <MicOff size={19} /> : <Mic size={19} />}
-            </button>
-            {callType === "video" && (
+            {/* Controls overlay */}
+            <footer className="absolute inset-x-0 bottom-0 z-20 flex items-center justify-center gap-2 bg-gradient-to-t from-black/90 via-black/55 to-transparent px-3 pb-6 pt-14 sm:gap-3">
               <button
-                onClick={toggleVideo}
-                aria-label={cameraOff ? "Turn camera on" : "Turn camera off"}
-                title={cameraOff ? "Turn camera on" : "Turn camera off"}
-                className={`flex h-12 w-12 items-center justify-center rounded-full transition ${cameraOff ? "bg-red-500 text-white" : "bg-white/10 text-white hover:bg-white/20"}`}
+                onClick={toggleAudio}
+                aria-label={muted ? "Unmute microphone" : "Mute microphone"}
+                title={muted ? "Unmute microphone" : "Mute microphone"}
+                className={`flex h-12 w-12 items-center justify-center rounded-full transition ${muted ? "bg-red-500 text-white" : "bg-white/15 text-white hover:bg-white/25"}`}
               >
-                {cameraOff ? <VideoOff size={19} /> : <Video size={19} />}
+                {muted ? <MicOff size={19} /> : <Mic size={19} />}
               </button>
-            )}
-            <button
-              onClick={() => switchCallType(callType === "audio" ? "video" : "audio")}
-              disabled={working}
-              title={callType === "audio" ? "Switch to video call" : "Switch to voice call"}
-              className="flex h-12 items-center gap-2 rounded-full bg-white/10 px-4 text-xs font-semibold transition hover:bg-white/20 disabled:opacity-50 sm:px-5"
-            >
-              {callType === "audio" ? <Video size={17} /> : <Phone size={17} />}
-              <span className="hidden sm:inline">{callType === "audio" ? "Switch to video" : "Switch to voice"}</span>
-            </button>
-            <button
-              onClick={leaveCall}
-              aria-label="End call"
-              title="Leave call"
-              className="ml-1 flex h-12 w-14 items-center justify-center rounded-full bg-red-600 text-white transition hover:bg-red-700 sm:w-16"
-            >
-              <PhoneOff size={20} />
-            </button>
-          </footer>
+              {callType === "video" && (
+                <button
+                  onClick={toggleVideo}
+                  aria-label={cameraOff ? "Turn camera on" : "Turn camera off"}
+                  title={cameraOff ? "Turn camera on" : "Turn camera off"}
+                  className={`flex h-12 w-12 items-center justify-center rounded-full transition ${cameraOff ? "bg-red-500 text-white" : "bg-white/15 text-white hover:bg-white/25"}`}
+                >
+                  {cameraOff ? <VideoOff size={19} /> : <Video size={19} />}
+                </button>
+              )}
+              <button
+                onClick={() => switchCallType(callType === "audio" ? "video" : "audio")}
+                disabled={working}
+                title={callType === "audio" ? "Switch to video call" : "Switch to voice call"}
+                className="flex h-12 items-center gap-2 rounded-full bg-white/15 px-4 text-xs font-semibold transition hover:bg-white/25 disabled:opacity-50 sm:px-5"
+              >
+                {callType === "audio" ? <Video size={17} /> : <Phone size={17} />}
+                <span className="hidden sm:inline">{callType === "audio" ? "Switch to video" : "Switch to voice"}</span>
+              </button>
+              <button
+                onClick={leaveCall}
+                aria-label="End call"
+                title="Leave call"
+                className="ml-1 flex h-12 w-14 items-center justify-center rounded-full bg-red-600 text-white transition hover:bg-red-700 sm:w-16"
+              >
+                <PhoneOff size={20} />
+              </button>
+            </footer>
+          </main>
         </div>
       )}
     </>

@@ -33,10 +33,9 @@ export const metadata = {
     "prayer requests",
     "testimonies",
   ],
-  icons: {
-    icon: "/mpl-logo.png",
-    apple: "/mpl-logo.png",
-  },
+  // Browser-tab and home-screen icons come from the App Router file
+  // conventions in this folder (favicon.ico, icon.png, apple-icon.png), which
+  // are generated from public/mpl-logo.png.
   openGraph: {
     type: "website",
     siteName: "My Prayer Line",

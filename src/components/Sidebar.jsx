@@ -16,7 +16,16 @@ import {
   MoreHorizontal,
 } from "lucide-react";
 import { onAuthStateChanged } from "firebase/auth";
-import { collection, doc, getDoc, onSnapshot } from "firebase/firestore";
+import {
+  collection,
+  doc,
+  getDoc,
+  getDocs,
+  limit,
+  onSnapshot,
+  query,
+  where,
+} from "firebase/firestore";
 import { auth, db } from "@/lib/firebase";
 
 const navigation = [
@@ -67,19 +76,96 @@ export default function Sidebar({ unreadCount = 0 }) {
 
       unsubscribeMemberships = onSnapshot(
         collection(db, "users", user.uid, "groupMemberships"),
-        (snapshot) => {
-          const membership = snapshot.docs.find(
-            (item) => item.data().groupName
-          );
+        async (snapshot) => {
+          try {
+            // A membership can outlive its group (deleted, renamed test group,
+            // rejected application), so the group document is checked before
+            // it is featured. This is what kept a stale "test 2" in the card.
+            const groups = await Promise.all(
+              snapshot.docs.map(async (membership) => {
+                try {
+                  const groupSnapshot = await getDoc(
+                    doc(db, "prayerGroups", membership.id)
+                  );
 
-          setFeaturedGroup(
-            membership
-              ? {
-                  id: membership.id,
-                  name: membership.data().groupName,
+                  if (!groupSnapshot.exists()) return null;
+
+                  const group = groupSnapshot.data();
+
+                  if (
+                    group.status !== "active" ||
+                    group.approvalStatus !== "approved"
+                  ) {
+                    return null;
+                  }
+
+                  return {
+                    id: groupSnapshot.id,
+                    name:
+                      group.name ||
+                      membership.data().groupName ||
+                      "Prayer group",
+                    memberCount: Number(group.memberCount) || 0,
+                  };
+                } catch (groupError) {
+                  if (groupError.code !== "permission-denied") {
+                    console.warn(
+                      "Sidebar group lookup failed:",
+                      membership.id,
+                      groupError
+                    );
+                  }
+
+                  return null;
                 }
-              : null
-          );
+              })
+            );
+
+            if (!active) return;
+
+            const ranked = groups
+              .filter(Boolean)
+              .sort((a, b) => b.memberCount - a.memberCount);
+
+            if (ranked.length > 0) {
+              setFeaturedGroup({ id: ranked[0].id, name: ranked[0].name });
+              return;
+            }
+
+            // No usable membership: feature a real active public group instead
+            // of leaving the card on a leftover test group.
+            const publicSnapshot = await getDocs(
+              query(
+                collection(db, "prayerGroups"),
+                where("privacy", "==", "Public"),
+                where("approvalStatus", "==", "approved"),
+                where("status", "==", "active"),
+                limit(10)
+              )
+            );
+
+            if (!active) return;
+
+            const publicGroups = publicSnapshot.docs
+              .map((item) => ({ id: item.id, ...item.data() }))
+              .sort(
+                (a, b) =>
+                  (Number(b.memberCount) || 0) - (Number(a.memberCount) || 0)
+              );
+
+            setFeaturedGroup(
+              publicGroups.length
+                ? {
+                    id: publicGroups[0].id,
+                    name: publicGroups[0].name || "Prayer group",
+                  }
+                : null
+            );
+          } catch (error) {
+            console.error("Sidebar group loading error:", error);
+
+            if (active) setFeaturedGroup(null);
+          }
         },
         (error) => {
           console.error("Sidebar group loading error:", error);

@@ -4,7 +4,9 @@
 import { useEffect, useMemo, useState } from "react";
 import {
   collection,
+  deleteField,
   doc,
+  getDoc,
   onSnapshot,
   query,
   where,
@@ -127,21 +129,17 @@ export default function AdminGroupsPage() {
     }
 
     const isApproval = action === "approve";
-
     const confirmed = window.confirm(
       isApproval
         ? `Approve "${group.name}"? It will become available according to its privacy settings.`
         : `Reject "${group.name}"? The group will not be available to members.`
     );
-
     if (!confirmed) return;
 
     setProcessingId(group.id);
     setError("");
 
     try {
-      const groupRef = doc(db, "prayerGroups", group.id);
-      const batch = writeBatch(db);
       const groupUpdate = {
         status: isApproval ? "active" : "rejected",
         approvalStatus: isApproval ? "approved" : "rejected",
@@ -152,22 +150,70 @@ export default function AdminGroupsPage() {
         moderatedBy: currentUser.uid,
         updatedAt: serverTimestamp(),
       };
-
       if (isApproval) {
         groupUpdate.approvedBy = currentUser.uid;
         groupUpdate.approvedAt = serverTimestamp();
       }
 
-      batch.update(groupRef, groupUpdate);
+      // Group creation stores null placeholders for the moderation metadata.
+      // The Firestore rules compare these fields with `request.time` /
+      // `request.auth.uid`, and a null value makes that comparison raise an
+      // evaluation error (which Firestore reports as permission-denied).
+      // Remove every placeholder this update is not replacing.
+      const clearedFields = [
+        "suspendedAt",
+        "suspendedBy",
+        "reportStatusUpdatedAt",
+      ];
+      if (!isApproval) {
+        clearedFields.push("approvedAt", "approvedBy");
+      }
+      for (const field of clearedFields) {
+        if (group[field] === null || group[field] === undefined) {
+          groupUpdate[field] = deleteField();
+        }
+      }
 
-      if (isApproval && group.ownerId) {
-        const notificationRef = doc(
+      const verificationRef = doc(db, "groupVerificationDetails", group.id);
+      let verificationSnap;
+      try {
+        verificationSnap = await getDoc(verificationRef);
+      } catch (readErr) {
+        console.error("moderateGroup: failed reading groupVerificationDetails", readErr);
+        throw readErr;
+      }
+
+      // The rules only let a user read their own notifications, so an admin
+      // cannot check whether the owner's activation notification already
+      // exists. This page only lists applications that are still pending, and
+      // a pending group cannot have an activation notification yet, so the
+      // write below is always a create.
+      let notificationRef = null;
+      if (isApproval && group.ownerId && group.approvalStatus === "pending") {
+        notificationRef = doc(
           db,
           "users",
           group.ownerId,
           "notifications",
           getNotificationId(group.id, "group_activated")
         );
+      }
+
+      const batch = writeBatch(db);
+      batch.update(doc(db, "prayerGroups", group.id), groupUpdate);
+
+      if (verificationSnap.exists()) {
+        batch.update(verificationRef, {
+          verificationStatus: isApproval ? "approved" : "rejected",
+          reviewedBy: currentUser.uid,
+          reviewedAt: serverTimestamp(),
+          adminNote: isApproval
+            ? "Verified during group approval."
+            : "Group application rejected.",
+        });
+      }
+
+      if (notificationRef) {
         batch.set(
           notificationRef,
           buildActivityNotification({
@@ -181,7 +227,12 @@ export default function AdminGroupsPage() {
         );
       }
 
-      await batch.commit();
+      try {
+        await batch.commit();
+      } catch (batchErr) {
+        console.error("moderateGroup: batch commit failed", batchErr);
+        throw batchErr;
+      }
 
       try {
         await recordAdminActivity({
@@ -189,22 +240,23 @@ export default function AdminGroupsPage() {
           action: isApproval ? "group_approved" : "group_rejected",
           targetType: "prayer_group",
           targetId: group.id,
-          targetName: group.name,
+          targetName: group.name || "Untitled group",
+          details: isApproval ? "Approved group application" : "Rejected group application",
         });
       } catch (activityError) {
         console.error("Group moderation activity logging error:", activityError);
         setError("The group was updated, but the activity log could not be saved.");
+        setProcessingId(null);
+        if (selectedGroup?.id === group.id) setSelectedGroup(null);
+        return;
       }
 
-      if (selectedGroup?.id === group.id) {
-        setSelectedGroup(null);
-      }
+      if (selectedGroup?.id === group.id) setSelectedGroup(null);
     } catch (err) {
       console.error("Group moderation error:", err);
-
       setError(
-        err.code === "permission-denied"
-          ? "Permission denied. Confirm that your Firestore profile role is super_admin or platform_admin and that the latest rules are published."
+        err?.code === "permission-denied"
+          ? "Permission denied while saving the moderation. The group application could not be updated."
           : "The group could not be updated. Please try again."
       );
     } finally {

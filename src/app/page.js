@@ -1,7 +1,7 @@
 
 import Link from "next/link";
 import Image from "next/image";
-import { ArrowRight } from "lucide-react";
+import LandingActions from "@/components/LandingActions";
 
 export default function WelcomePage() {
   return (
@@ -48,22 +48,7 @@ export default function WelcomePage() {
               experience the power of prayer—together.
             </p>
 
-            <div className="flex flex-col gap-3 sm:flex-row">
-              <Link
-                href="/signup"
-                className="inline-flex min-h-12 items-center justify-center gap-4 rounded-xl bg-[#d6b56d] px-5 text-xs font-bold text-[#064e3b] transition hover:bg-[#e6c477]"
-              >
-                Create your account
-                <ArrowRight size={18} />
-              </Link>
-
-              <Link
-                href="/login"
-                className="inline-flex min-h-12 items-center justify-center rounded-xl border border-white/25 px-5 text-xs font-bold text-white transition hover:bg-white/10"
-              >
-                I already have an account
-              </Link>
-            </div>
+            <LandingActions />
 
             <p className="mt-5 text-[9px] text-white/55">
               Free forever · A safe and caring community

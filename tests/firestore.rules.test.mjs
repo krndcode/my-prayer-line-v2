@@ -12,6 +12,7 @@ import {
 } from "@firebase/rules-unit-testing";
 import {
   deleteDoc,
+  deleteField,
   doc,
   getDoc,
   serverTimestamp,
@@ -358,6 +359,196 @@ test("allows an admin to notify active members after deleting a group", async ()
         sourceId: "group-1",
         destination: "/prayer-space",
       })
+    )
+  );
+});
+
+test("allows an admin to approve a pending group atomically", async () => {
+  await seedDocuments([
+    ["users/admin", { role: "super_admin" }],
+    ["users/owner", { role: "member" }],
+    ["prayerGroups/group-1", {
+      name: "Prayer Group",
+      ownerId: "owner",
+      status: "pending",
+      approvalStatus: "pending",
+      privacy: "Public",
+      memberCount: 1,
+    }],
+    ["groupVerificationDetails/group-1", {
+      groupId: "group-1",
+      ownerId: "owner",
+      verificationStatus: "pending",
+    }],
+  ]);
+
+  const db = testEnv.authenticatedContext("admin").firestore();
+  const batch = writeBatch(db);
+  batch.update(doc(db, "prayerGroups/group-1"), {
+    status: "active",
+    approvalStatus: "approved",
+    moderationNote: "Group approved by platform administration.",
+    moderatedAt: serverTimestamp(),
+    moderatedBy: "admin",
+    updatedAt: serverTimestamp(),
+    approvedBy: "admin",
+    approvedAt: serverTimestamp(),
+  });
+  batch.update(doc(db, "groupVerificationDetails/group-1"), {
+    verificationStatus: "approved",
+    reviewedBy: "admin",
+    reviewedAt: serverTimestamp(),
+    adminNote: "Verified during group approval.",
+  });
+  batch.set(
+    doc(db, "users/owner/notifications/group-1_group_activated"),
+    activityNotification({
+      title: "Your group is active",
+      description: '"Prayer Group" has been approved and is now active.',
+      type: "group_activated",
+      groupId: "group-1",
+      sourceId: "group-1",
+      destination: "/prayer-space/group-1",
+    })
+  );
+
+  await assertSucceeds(batch.commit());
+});
+
+test("allows an admin to reject a pending group without a notification", async () => {
+  await seedDocuments([
+    ["users/admin", { role: "platform_admin" }],
+    ["prayerGroups/group-1", {
+      name: "Prayer Group",
+      ownerId: "owner",
+      status: "pending",
+      approvalStatus: "pending",
+      privacy: "Private",
+      memberCount: 1,
+      approvedBy: null,
+      approvedAt: null,
+      suspendedBy: null,
+      suspendedAt: null,
+    }],
+  ]);
+
+  const db = testEnv.authenticatedContext("admin").firestore();
+  await assertSucceeds(
+    setDoc(
+      doc(db, "prayerGroups/group-1"),
+      {
+        status: "rejected",
+        approvalStatus: "rejected",
+        moderationNote: "Group rejected by platform administration.",
+        moderatedAt: serverTimestamp(),
+        moderatedBy: "admin",
+        updatedAt: serverTimestamp(),
+        suspendedAt: deleteField(),
+        suspendedBy: deleteField(),
+        approvedBy: deleteField(),
+        approvedAt: deleteField(),
+      },
+      { merge: true }
+    )
+  );
+});
+
+test("denies an admin reading another user's notifications", async () => {
+  await seedDocuments([
+    ["users/admin", { role: "super_admin" }],
+    ["users/owner", { role: "member" }],
+    [
+      "users/owner/notifications/group-1_group_activated",
+      activityNotification({
+        type: "group_activated",
+        sourceId: "group-1",
+        groupId: "group-1",
+      }),
+    ],
+  ]);
+
+  // Admins cannot read other users' notifications, so the moderation flow must
+  // not check for an existing notification before creating it.
+  const db = testEnv.authenticatedContext("admin").firestore();
+  await assertFails(
+    getDoc(doc(db, "users/owner/notifications/group-1_group_activated"))
+  );
+});
+
+test("allows an admin to approve a group that still has null suspension placeholders", async () => {
+  await seedDocuments([
+    ["users/admin", { role: "super_admin" }],
+    ["prayerGroups/group-1", {
+      name: "Prayer Group",
+      ownerId: "owner",
+      status: "pending",
+      approvalStatus: "pending",
+      privacy: "Public",
+      memberCount: 1,
+      approvedBy: null,
+      approvedAt: null,
+      suspendedBy: null,
+      suspendedAt: null,
+      suspensionReason: null,
+      rejectionReason: null,
+    }],
+  ]);
+
+  const db = testEnv.authenticatedContext("admin").firestore();
+
+  // Comparing the null placeholders with request.time / request.auth.uid
+  // makes the rules evaluation error out, so the client removes them in the
+  // same write.
+  await assertSucceeds(
+    setDoc(
+      doc(db, "prayerGroups/group-1"),
+      {
+        status: "active",
+        approvalStatus: "approved",
+        moderationNote: "Group approved by platform administration.",
+        moderatedAt: serverTimestamp(),
+        moderatedBy: "admin",
+        updatedAt: serverTimestamp(),
+        approvedBy: "admin",
+        approvedAt: serverTimestamp(),
+        suspendedAt: deleteField(),
+        suspendedBy: deleteField(),
+      },
+      { merge: true }
+    )
+  );
+});
+
+test("rejects an admin update that keeps null suspension placeholders", async () => {
+  await seedDocuments([
+    ["users/admin", { role: "super_admin" }],
+    ["prayerGroups/group-1", {
+      name: "Prayer Group",
+      ownerId: "owner",
+      status: "pending",
+      approvalStatus: "pending",
+      privacy: "Public",
+      memberCount: 1,
+      suspendedBy: null,
+      suspendedAt: null,
+    }],
+  ]);
+
+  const db = testEnv.authenticatedContext("admin").firestore();
+  await assertFails(
+    setDoc(
+      doc(db, "prayerGroups/group-1"),
+      {
+        status: "active",
+        approvalStatus: "approved",
+        moderationNote: "Group approved by platform administration.",
+        moderatedAt: serverTimestamp(),
+        moderatedBy: "admin",
+        updatedAt: serverTimestamp(),
+        approvedBy: "admin",
+        approvedAt: serverTimestamp(),
+      },
+      { merge: true }
     )
   );
 });

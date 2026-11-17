@@ -5,7 +5,7 @@ import Link from "next/link";
 import Image from "next/image";
 import { useRouter } from "next/navigation";
 import { ArrowLeft, Eye, EyeOff } from "lucide-react";
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import {
   createUserWithEmailAndPassword,
@@ -13,6 +13,10 @@ import {
   updateProfile,
   GoogleAuthProvider,
   signInWithPopup,
+  browserLocalPersistence,
+  browserSessionPersistence,
+  onAuthStateChanged,
+  setPersistence,
 } from "firebase/auth";
 
 import {
@@ -30,8 +34,41 @@ export default function AuthLayout({ mode }) {
 
   const [showPassword, setShowPassword] = useState(false);
   const [showConfirmPassword, setShowConfirmPassword] = useState(false);
+  const [rememberMe, setRememberMe] = useState(true);
   const [message, setMessage] = useState("");
   const [isLoading, setIsLoading] = useState(false);
+  const authActionInProgress = useRef(false);
+
+  // Firebase restores the previous session asynchronously. If one is already
+  // active, skip the form so a returning user is not asked to sign in again.
+  // The handlers below redirect themselves once any profile writes finish.
+  useEffect(() => {
+    const unsubscribe = onAuthStateChanged(auth, (currentUser) => {
+      if (currentUser && !authActionInProgress.current) {
+        router.replace("/dashboard");
+      }
+    });
+
+    return unsubscribe;
+  }, [router]);
+
+  // "Remember me" checked keeps the session in browser storage so it survives
+  // closing the browser. Unchecked keeps it for this browser session only.
+  async function applyPersistence() {
+    try {
+      await setPersistence(
+        auth,
+        rememberMe ? browserLocalPersistence : browserSessionPersistence
+      );
+    } catch (persistenceError) {
+      // Private-browsing modes can block storage. Sign-in still works, it just
+      // will not survive a restart.
+      console.warn(
+        "Unable to set Firebase auth persistence:",
+        persistenceError
+      );
+    }
+  }
 
   function getFriendlyError(error) {
     const errors = {
@@ -103,8 +140,11 @@ export default function AuthLayout({ mode }) {
     }
 
     setIsLoading(true);
+    authActionInProgress.current = true;
 
     try {
+      await applyPersistence();
+
       if (isSignup) {
         // Create Firebase Authentication account.
         const userCredential = await createUserWithEmailAndPassword(
@@ -150,6 +190,7 @@ export default function AuthLayout({ mode }) {
 
     } finally {
       setIsLoading(false);
+      authActionInProgress.current = false;
     }
   }
 
@@ -157,8 +198,11 @@ export default function AuthLayout({ mode }) {
   async function handleGoogleSignIn() {
     setMessage("");
     setIsLoading(true);
+    authActionInProgress.current = true;
 
     try {
+      await applyPersistence();
+
       const provider = new GoogleAuthProvider();
 
       provider.setCustomParameters({
@@ -195,6 +239,7 @@ export default function AuthLayout({ mode }) {
 
     } finally {
       setIsLoading(false);
+      authActionInProgress.current = false;
     }
   }
 
@@ -305,6 +350,7 @@ export default function AuthLayout({ mode }) {
                     name="fullName"
                     type="text"
                     required
+                    autoComplete="name"
                     placeholder="Your full name"
                     className="auth-input"
                   />
@@ -316,6 +362,7 @@ export default function AuthLayout({ mode }) {
                   <input
                     name="phone"
                     type="tel"
+                    autoComplete="tel"
                     placeholder="+233 00 000 0000"
                     className="auth-input"
                   />
@@ -331,6 +378,7 @@ export default function AuthLayout({ mode }) {
                 name="email"
                 type="email"
                 required
+                autoComplete="email"
                 placeholder="you@example.com"
                 className="auth-input"
               />
@@ -346,6 +394,7 @@ export default function AuthLayout({ mode }) {
                   type={showPassword ? "text" : "password"}
                   required
                   minLength={8}
+                  autoComplete={isSignup ? "new-password" : "current-password"}
                   placeholder="At least 8 characters"
                   className="auth-input pr-12"
                 />
@@ -372,6 +421,7 @@ export default function AuthLayout({ mode }) {
                     type={showConfirmPassword ? "text" : "password"}
                     required
                     minLength={8}
+                    autoComplete="new-password"
                     placeholder="Repeat your password"
                     className="auth-input pr-12"
                   />
@@ -404,7 +454,12 @@ export default function AuthLayout({ mode }) {
               ) : (
                 <>
                   <label className="flex items-center gap-2">
-                    <input type="checkbox" name="remember" />
+                    <input
+                      type="checkbox"
+                      name="remember"
+                      checked={rememberMe}
+                      onChange={(event) => setRememberMe(event.target.checked)}
+                    />
                     Remember me
                   </label>
 
