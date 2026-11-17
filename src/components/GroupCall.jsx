@@ -827,56 +827,61 @@ export default function GroupCall({ groupId, groupName, user, canJoin }) {
       throw new Error("This browser does not support voice or video calls.");
     }
 
-    // A call without a live microphone track is silent for everybody else, so
-    // fail loudly instead of joining a one-way call. Some mobile browsers
-    // reject the advanced audio constraints, so retry with plain booleans.
-    async function requestStream(constraints, plainConstraints) {
-      let stream;
-      try {
-        stream = await navigator.mediaDevices.getUserMedia(constraints);
-      } catch (mediaError) {
-        if (!plainConstraints) throw mediaError;
-        console.warn("Constrained media request failed, retrying with defaults:", mediaError);
-        stream = await navigator.mediaDevices.getUserMedia(plainConstraints);
-      }
-      const audioTrack = stream.getAudioTracks()[0];
-
-      if (!audioTrack) {
-        stream.getTracks().forEach((track) => track.stop());
-        throw new Error(
-          "No microphone was found. Check the microphone permission and that a microphone is connected."
-        );
-      }
-
-      audioTrack.enabled = true;
-      return stream;
+    // Get the microphone first. On mobile a combined audio+video request can
+    // fail as a whole when the camera is slow or already in use ("Timeout
+    // starting video source"), which would otherwise block the call entirely.
+    // Some browsers also reject the advanced audio constraints, so retry with
+    // plain booleans before giving up on the microphone.
+    let stream;
+    try {
+      stream = await navigator.mediaDevices.getUserMedia({
+        audio: {
+          echoCancellation: true,
+          noiseSuppression: true,
+          autoGainControl: true,
+        },
+        video: false,
+      });
+    } catch (audioError) {
+      console.warn("Constrained microphone request failed, retrying with defaults:", audioError);
+      stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
     }
 
-    const audioConstraints = {
-      echoCancellation: true,
-      noiseSuppression: true,
-      autoGainControl: true,
-    };
+    const audioTrack = stream.getAudioTracks()[0];
 
+    if (!audioTrack) {
+      stream.getTracks().forEach((track) => track.stop());
+      throw new Error(
+        "No microphone was found. Check the microphone permission and that a microphone is connected."
+      );
+    }
+
+    audioTrack.enabled = true;
+
+    if (type !== "video") {
+      return { stream, cameraUnavailable: false };
+    }
+
+    // Ask for the camera separately so its failure never costs the call. The
+    // peer connections are built later, so a track added here is negotiated
+    // normally with audio under the same MediaStream.
     try {
-      return {
-        stream: await requestStream(
-          { audio: audioConstraints, video: type === "video" },
-          { audio: true, video: type === "video" }
-        ),
-        cameraUnavailable: false,
-      };
-    } catch (mediaError) {
-      if (type !== "video") throw mediaError;
+      const cameraStream = await navigator.mediaDevices.getUserMedia({
+        video: true,
+        audio: false,
+      });
+      const videoTrack = cameraStream.getVideoTracks()[0];
 
-      console.warn("Starting video failed; trying an audio-only call:", mediaError);
-      return {
-        stream: await requestStream(
-          { audio: audioConstraints, video: false },
-          { audio: true, video: false }
-        ),
-        cameraUnavailable: true,
-      };
+      if (!videoTrack) {
+        cameraStream.getTracks().forEach((track) => track.stop());
+        throw new Error("The camera did not return a video track.");
+      }
+
+      stream.addTrack(videoTrack);
+      return { stream, cameraUnavailable: false };
+    } catch (cameraError) {
+      console.warn("Starting the camera failed; joining with the microphone only:", cameraError);
+      return { stream, cameraUnavailable: true };
     }
   }
 
