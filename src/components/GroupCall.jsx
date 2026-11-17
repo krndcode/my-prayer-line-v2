@@ -23,24 +23,52 @@ import {
 import { db } from "@/lib/firebase";
 import { stopRingtone, setCallAudioActive } from "@/lib/sound";
 
-// A TURN relay can be supplied through environment variables when the app is
-// deployed. Without it some mobile networks cannot connect the two browsers at
-// all, which is heard as "nobody can hear me".
+// Mobile/cellular networks use symmetric NAT, which STUN alone cannot
+// traverse. Without a TURN relay the peer connection never establishes, so
+// neither audio nor video ever flows. Metered's Open Relay is a free public
+// TURN service (20 GB/month, ports 80/443) that works without signup.
+// Dedicated credentials can be supplied through NEXT_PUBLIC_TURN_* below;
+// when present they replace the public TURN servers.
 const turnUrl = process.env.NEXT_PUBLIC_TURN_URL;
+const turnUsername = process.env.NEXT_PUBLIC_TURN_USERNAME;
+const turnCredential = process.env.NEXT_PUBLIC_TURN_CREDENTIAL;
+
+const stunServers = [
+  { urls: "stun:stun.l.google.com:19302" },
+  { urls: "stun:stun1.l.google.com:19302" },
+  { urls: "stun:openrelay.metered.ca:80" },
+];
+
+const openRelayTurnServers = [
+  {
+    urls: "turn:openrelay.metered.ca:80",
+    username: "openrelayproject",
+    credential: "openrelayproject",
+  },
+  {
+    urls: "turn:openrelay.metered.ca:443",
+    username: "openrelayproject",
+    credential: "openrelayproject",
+  },
+  {
+    urls: "turn:openrelay.metered.ca:443?transport=tcp",
+    username: "openrelayproject",
+    credential: "openrelayproject",
+  },
+];
 
 const rtcConfiguration = {
   iceServers: [
-    { urls: "stun:stun.l.google.com:19302" },
-    { urls: "stun:stun1.l.google.com:19302" },
+    ...stunServers,
     ...(turnUrl
       ? [
           {
             urls: turnUrl,
-            username: process.env.NEXT_PUBLIC_TURN_USERNAME || "",
-            credential: process.env.NEXT_PUBLIC_TURN_CREDENTIAL || "",
+            username: turnUsername || "",
+            credential: turnCredential || "",
           },
         ]
-      : []),
+      : openRelayTurnServers),
   ],
   iceCandidatePoolSize: 4,
 };
@@ -127,8 +155,23 @@ function MediaTile({
   const audioRef = useRef(null);
   const [needsAudioTap, setNeedsAudioTap] = useState(false);
 
+  // Remote tracks can arrive one at a time (audio first, video later) on the
+  // same MediaStream object. Re-attaching srcObject when the track list
+  // changes makes mobile Safari paint the late video track reliably.
+  const trackSignature = stream
+    ? stream
+        .getTracks()
+        .map((track) => `${track.kind}:${track.id}:${track.readyState}`)
+        .join("|")
+    : "";
+
   useEffect(() => {
-    if (videoRef.current) videoRef.current.srcObject = stream || null;
+    if (videoRef.current) {
+      videoRef.current.srcObject = stream || null;
+      if (stream) {
+        videoRef.current.play().catch(() => {});
+      }
+    }
 
     const audio = audioRef.current;
 
@@ -183,7 +226,7 @@ function MediaTile({
       window.removeEventListener("keydown", attemptPlayback);
       document.removeEventListener("visibilitychange", handleVisibilityChange);
     };
-  }, [stream, audioOnly]);
+  }, [stream, trackSignature, audioOnly]);
 
   const initials = label
     .split(/\s+/)
@@ -785,9 +828,17 @@ export default function GroupCall({ groupId, groupName, user, canJoin }) {
     }
 
     // A call without a live microphone track is silent for everybody else, so
-    // fail loudly instead of joining a one-way call.
-    async function requestStream(constraints) {
-      const stream = await navigator.mediaDevices.getUserMedia(constraints);
+    // fail loudly instead of joining a one-way call. Some mobile browsers
+    // reject the advanced audio constraints, so retry with plain booleans.
+    async function requestStream(constraints, plainConstraints) {
+      let stream;
+      try {
+        stream = await navigator.mediaDevices.getUserMedia(constraints);
+      } catch (mediaError) {
+        if (!plainConstraints) throw mediaError;
+        console.warn("Constrained media request failed, retrying with defaults:", mediaError);
+        stream = await navigator.mediaDevices.getUserMedia(plainConstraints);
+      }
       const audioTrack = stream.getAudioTracks()[0];
 
       if (!audioTrack) {
@@ -801,16 +852,18 @@ export default function GroupCall({ groupId, groupName, user, canJoin }) {
       return stream;
     }
 
+    const audioConstraints = {
+      echoCancellation: true,
+      noiseSuppression: true,
+      autoGainControl: true,
+    };
+
     try {
       return {
-        stream: await requestStream({
-          audio: {
-            echoCancellation: true,
-            noiseSuppression: true,
-            autoGainControl: true,
-          },
-          video: type === "video",
-        }),
+        stream: await requestStream(
+          { audio: audioConstraints, video: type === "video" },
+          { audio: true, video: type === "video" }
+        ),
         cameraUnavailable: false,
       };
     } catch (mediaError) {
@@ -818,14 +871,10 @@ export default function GroupCall({ groupId, groupName, user, canJoin }) {
 
       console.warn("Starting video failed; trying an audio-only call:", mediaError);
       return {
-        stream: await requestStream({
-          audio: {
-            echoCancellation: true,
-            noiseSuppression: true,
-            autoGainControl: true,
-          },
-          video: false,
-        }),
+        stream: await requestStream(
+          { audio: audioConstraints, video: false },
+          { audio: true, video: false }
+        ),
         cameraUnavailable: true,
       };
     }

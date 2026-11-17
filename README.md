@@ -45,7 +45,7 @@ Built with **Next.js 16 (App Router)**, **React 19**, **Tailwind CSS 4**, and **
 
 ### Group calls
 
-- Browser-based **peer-to-peer audio/video calls** using WebRTC, with Firestore used for signaling and Google STUN servers for connectivity.
+- Browser-based **peer-to-peer audio/video calls** using WebRTC, with Firestore used for signaling, Google STUN, and Metered Open Relay (free TURN) so mobile/cellular networks can connect. To use dedicated TURN credentials, set `NEXT_PUBLIC_TURN_URL`, `NEXT_PUBLIC_TURN_USERNAME`, and `NEXT_PUBLIC_TURN_CREDENTIAL` in `.env.local`.
 
 ### Administration
 
