@@ -1755,15 +1755,8 @@ function GroupRoomContent({ params }) {
             CHAT MESSAGES
         ==================================== */}
 
-        <div className="flex-1 overflow-y-auto bg-[#efeae2]">
-          <div
-            className="mx-auto flex min-h-full w-full max-w-3xl flex-col px-2.5 py-3 sm:px-6 sm:py-4"
-            style={{
-              backgroundImage:
-                "radial-gradient(circle at 1px 1px, rgba(17, 27, 33, 0.055) 1px, transparent 0)",
-              backgroundSize: "22px 22px",
-            }}
-          >
+        <div className="chat-faith-background flex-1 overflow-y-auto">
+          <div className="mx-auto flex min-h-full w-full max-w-3xl flex-col px-2.5 py-3 sm:px-6 sm:py-4">
 
             {/* Group intro */}
             <div className="mx-auto mb-4 flex w-full max-w-md flex-col items-center gap-1.5 rounded-xl bg-white/90 px-4 py-3 text-center shadow-sm">

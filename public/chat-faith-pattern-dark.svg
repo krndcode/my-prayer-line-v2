@@ -1,0 +1,58 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="160" height="160" viewBox="0 0 160 160">
+  <g fill="none" stroke="#8ed3ae" stroke-opacity="0.12" stroke-linecap="round" stroke-linejoin="round">
+    <!-- crosses -->
+    <g stroke-width="2">
+      <path d="M40 26v28 M32 38h16" />
+      <path d="M120 18v24 M113 30h14" />
+      <path d="M78 104v26 M70 116h16" />
+      <path d="M142 126v22 M135 136h14" />
+      <path d="M18 138v20 M12 148h12" />
+    </g>
+
+    <!-- faint halos -->
+    <g stroke-width="1" stroke-opacity="0.08">
+      <circle cx="40" cy="40" r="22" />
+      <circle cx="120" cy="30" r="16" />
+      <circle cx="78" cy="116" r="20" />
+    </g>
+
+    <!-- doves -->
+    <g transform="translate(12 62) scale(1.25)" stroke-width="1.5">
+      <path d="M16 7h.01" />
+      <path d="M3.4 18H12a8 8 0 0 0 8-8V7a4 4 0 0 0-7.28-2.3L2 20" />
+      <path d="m20 7 2 .5-2 .5" />
+      <path d="M10 18v3" />
+      <path d="M14 17.75V21" />
+      <path d="M7 18a6 6 0 0 0 3.84-10.61" />
+    </g>
+    <g transform="translate(88 52) scale(1.1)" stroke-width="1.5">
+      <path d="M16 7h.01" />
+      <path d="M3.4 18H12a8 8 0 0 0 8-8V7a4 4 0 0 0-7.28-2.3L2 20" />
+      <path d="m20 7 2 .5-2 .5" />
+      <path d="M10 18v3" />
+      <path d="M14 17.75V21" />
+      <path d="M7 18a6 6 0 0 0 3.84-10.61" />
+    </g>
+    <g transform="translate(46 126) scale(1.15)" stroke-width="1.5">
+      <path d="M16 7h.01" />
+      <path d="M3.4 18H12a8 8 0 0 0 8-8V7a4 4 0 0 0-7.28-2.3L2 20" />
+      <path d="m20 7 2 .5-2 .5" />
+      <path d="M10 18v3" />
+      <path d="M14 17.75V21" />
+      <path d="M7 18a6 6 0 0 0 3.84-10.61" />
+    </g>
+    <g transform="translate(120 92) scale(1)" stroke-width="1.5">
+      <path d="M16 7h.01" />
+      <path d="M3.4 18H12a8 8 0 0 0 8-8V7a4 4 0 0 0-7.28-2.3L2 20" />
+      <path d="m20 7 2 .5-2 .5" />
+      <path d="M10 18v3" />
+      <path d="M14 17.75V21" />
+      <path d="M7 18a6 6 0 0 0 3.84-10.61" />
+    </g>
+
+    <!-- small accents -->
+    <g stroke-width="2">
+      <path d="M8 12h.01 M150 18h.01 M64 62h.01 M154 78h.01 M28 92h.01" />
+    </g>
+  </g>
+</svg>

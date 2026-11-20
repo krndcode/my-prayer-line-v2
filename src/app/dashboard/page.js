@@ -30,6 +30,7 @@ import {
   doc,
   getCountFromServer,
   getDoc,
+  getDocs,
   onSnapshot,
   serverTimestamp,
   Timestamp,
@@ -38,6 +39,10 @@ import {
 import { onAuthStateChanged } from "firebase/auth";
 
 import { auth, db } from "@/lib/firebase";
+import {
+  buildActivityNotification,
+  notifyGroupMembers,
+} from "@/lib/notifications";
 import { getGroupImageMap } from "@/lib/groupImages";
 import { shareContent } from "@/lib/share";
 import {
@@ -527,12 +532,18 @@ export default function Home() {
       return;
     }
 
+    // The group select stores the document id so we can notify its members.
+    const groupId = form.group;
+    const groupName =
+      myGroups.find((group) => group.id === groupId)?.name || groupId;
+
     try {
       setSavingMeeting(true);
 
-      await addDoc(collection(db, "prayerMeetings"), {
+      const meetingRef = await addDoc(collection(db, "prayerMeetings"), {
         title: form.title.trim(),
-        group: form.group,
+        group: groupName,
+        groupId,
         description: form.description.trim(),
         startAt: Timestamp.fromDate(startAt),
         durationMinutes: Number(form.duration),
@@ -544,8 +555,48 @@ export default function Home() {
         createdAt: serverTimestamp(),
       });
 
+      // Let the members of the selected group know about the new meeting.
+      let notificationWarning = false;
+      try {
+        const membersSnapshot = await getDocs(
+          collection(db, "prayerGroups", groupId, "members")
+        );
+        const recipientIds = membersSnapshot.docs
+          .filter(
+            (member) =>
+              member.id !== auth.currentUser.uid &&
+              member.data().status === "active"
+          )
+          .map((member) => member.id);
+
+        const result = await notifyGroupMembers(
+          db,
+          recipientIds,
+          buildActivityNotification({
+            title: "Prayer meeting scheduled",
+            description: `"${form.title.trim()}" has been scheduled for ${form.date} at ${form.time}.`,
+            type: "prayer_meeting_scheduled",
+            groupId,
+            sourceId: meetingRef.id,
+            destination: "/dashboard",
+          })
+        );
+
+        notificationWarning = result.failures.length > 0;
+        if (notificationWarning) {
+          console.error("Prayer meeting notification errors:", result.failures);
+        }
+      } catch (notificationError) {
+        console.error("Prayer meeting notification error:", notificationError);
+        notificationWarning = true;
+      }
+
       setShowScheduleModal(false);
-      showNotice("Prayer meeting scheduled successfully.");
+      showNotice(
+        notificationWarning
+          ? "Prayer meeting scheduled, but some members could not be notified."
+          : "Prayer meeting scheduled. Group members have been notified."
+      );
     } catch (error) {
       console.error("Meeting scheduling error:", error);
       showNotice(
@@ -1205,7 +1256,7 @@ function DetailItem({ icon: Icon, label, value }) {
 function ScheduleMeetingModal({ onClose, onSubmit, saving, groups = [], now }) {
   const [form, setForm] = useState({
     title: "",
-    group: groups[0]?.name || "",
+    group: groups[0]?.id || "",
     description: "",
     date: "",
     time: "07:30",
@@ -1311,7 +1362,7 @@ function ScheduleMeetingModal({ onClose, onSubmit, saving, groups = [], now }) {
               )}
 
               {groups.map((group) => (
-                <option key={group.id || group.name} value={group.name}>
+                <option key={group.id || group.name} value={group.id || group.name}>
                   {group.name}
                 </option>
               ))}
@@ -1411,9 +1462,9 @@ function ScheduleMeetingModal({ onClose, onSubmit, saving, groups = [], now }) {
           )}
 
           <div className="rounded-xl bg-[#f5f8f6] p-3 text-[10px] leading-5 text-gray-500">
-            Your meeting will be saved to the prayer meetings collection in
-            Firebase Firestore. Group membership and admin permissions will
-            be enforced as we complete the security rules.
+            Active members of the selected group will receive a notification
+            when the meeting is scheduled. The meeting will also appear on
+            their dashboards.
           </div>
 
           <button

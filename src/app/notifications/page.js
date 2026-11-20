@@ -40,6 +40,8 @@ const iconMap = {
   testimony: Flame,
   video: Video,
   meeting: CalendarDays,
+  meeting_scheduled: CalendarDays,
+  prayer_meeting_scheduled: CalendarDays,
   calendar: CalendarDays,
 };
 
@@ -146,7 +148,11 @@ export default function NotificationsPage() {
     const unsubscribe = onSnapshot(
       notificationRef,
       (snapshot) => {
+        // A notification is removed from view as soon as it is opened. Keeping
+        // the document with read=true (instead of deleting it) means the source
+        // event cannot recreate it later with the same deterministic id.
         const results = snapshot.docs
+          .filter((document) => !isRead(document.data()))
           .map(normalizeNotification)
           .sort((a, b) => b.createdAt - a.createdAt);
 
@@ -179,7 +185,7 @@ export default function NotificationsPage() {
     );
   }, [notifications, activeTab]);
 
-  async function markAsRead(notification) {
+  async function dismissNotification(notification) {
     if (!user || notification.read) return;
 
     try {
@@ -188,24 +194,25 @@ export default function NotificationsPage() {
         { read: true, unread: false, readAt: serverTimestamp() }
       );
     } catch (firebaseError) {
-      console.error("Mark notification as read error:", firebaseError);
-      setError("Unable to update this notification. Please try again.");
+      console.error("Dismiss notification error:", firebaseError);
+      setError("Unable to dismiss this notification. Please try again.");
       throw firebaseError;
     }
   }
 
-  async function markAllAsRead() {
-    if (!user || unreadCount === 0 || updating) return;
+  async function clearAllNotifications() {
+    if (!user || notifications.length === 0 || updating) return;
 
     setUpdating(true);
     setError("");
 
     try {
-      const unread = notifications.filter((notification) => !notification.read);
+      // Remove them from view immediately; the listener confirms the update.
+      setNotifications([]);
 
-      for (let offset = 0; offset < unread.length; offset += 450) {
+      for (let offset = 0; offset < notifications.length; offset += 450) {
         const batch = writeBatch(db);
-        unread.slice(offset, offset + 450).forEach((notification) => {
+        notifications.slice(offset, offset + 450).forEach((notification) => {
           batch.update(
             doc(db, "users", user.uid, "notifications", notification.id),
             { read: true, unread: false, readAt: serverTimestamp() }
@@ -214,18 +221,23 @@ export default function NotificationsPage() {
         await batch.commit();
       }
     } catch (firebaseError) {
-      console.error("Mark all notifications as read error:", firebaseError);
-      setError("Unable to update all notifications. Please try again.");
+      console.error("Clear all notifications error:", firebaseError);
+      setError("Unable to clear notifications. Please try again.");
     } finally {
       setUpdating(false);
     }
   }
 
   async function handleNotificationClick(notification) {
+    // Optimistically remove the row so it disappears as soon as it is tapped.
+    setNotifications((current) =>
+      current.filter((item) => item.id !== notification.id)
+    );
+
     try {
-      await markAsRead(notification);
+      await dismissNotification(notification);
     } catch {
-      return;
+      // Still open the destination even if the read marker could not be saved.
     }
 
     if (!notification.destination) return;
@@ -250,8 +262,8 @@ export default function NotificationsPage() {
           </div>
 
           <button
-            onClick={markAllAsRead}
-            disabled={unreadCount === 0 || updating}
+            onClick={clearAllNotifications}
+            disabled={notifications.length === 0 || updating}
             className="inline-flex shrink-0 items-center gap-2 rounded-lg px-2 py-2 text-[10px] font-bold text-[#059669] transition hover:bg-[#edf6f2] disabled:cursor-not-allowed disabled:opacity-40 sm:text-xs"
           >
             {updating ? (
@@ -260,9 +272,9 @@ export default function NotificationsPage() {
               <Check size={16} />
             )}
             <span className="hidden sm:inline">
-              {updating ? "Updating..." : "Mark all as read"}
+              {updating ? "Clearing..." : "Clear all"}
             </span>
-            <span className="sm:hidden">Mark read</span>
+            <span className="sm:hidden">Clear</span>
           </button>
         </header>
 

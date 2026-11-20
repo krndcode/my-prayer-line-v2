@@ -2,15 +2,22 @@
   "name": "my-prayer-line-v2",
   "version": "0.1.0",
   "private": true,
+  "type": "module",
   "scripts": {
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
     "lint": "eslint",
+    "test:unit": "node --test tests/livekit-shared.test.mjs",
     "test:rules": "firebase emulators:exec --only firestore,storage --project demo-my-prayer-line \"node --test tests/firestore.rules.test.mjs\""
   },
   "dependencies": {
+    "@livekit/components-react": "^2.9.25",
+    "@livekit/components-styles": "^1.2.0",
     "firebase": "^13.2.0",
+    "firebase-admin": "^13.10.0",
+    "livekit-client": "^2.24.1",
+    "livekit-server-sdk": "^2.20.0",
     "lucide-react": "^1.70.0",
     "next": "16.4.5",
     "react": "19.3.0",
