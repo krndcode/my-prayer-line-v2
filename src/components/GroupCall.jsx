@@ -361,6 +361,8 @@ export default function GroupCall({ groupId, groupName, user, canJoin }) {
         <LiveKitCall
           serverUrl={session.url}
           token={session.token}
+          groupId={groupId}
+          callId={session.callId}
           groupName={groupName}
           callType={session.callType}
           displayName={user.displayName || user.email || "Group member"}

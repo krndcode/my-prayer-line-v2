@@ -271,6 +271,7 @@ export async function createCall(groupId, callType, uid, access) {
     provider: "livekit",
     participantCount: 0,
     activeParticipants: [],
+    ringSeq: 0,
     createdAt: FieldValue.serverTimestamp(),
     updatedAt: FieldValue.serverTimestamp(),
   });

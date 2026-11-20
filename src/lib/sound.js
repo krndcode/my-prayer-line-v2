@@ -19,6 +19,7 @@ const NOTIFICATION_SRC = "/sounds/notification.wav";
 
 let audioContext = null;
 let webRingtoneTimer = null;
+let webRingtoneGeneration = 0;
 let vibrationTimer = null;
 let ringtoneAudio = null;
 let notificationAudio = null;
@@ -344,45 +345,64 @@ function stopVibration() {
   }
 }
 
-function startWebAudioRingtone() {
+function startWebAudioRingtone(token) {
+  stopWebAudioRingtone();
+
   const context = getAudioContext();
   if (!context) return;
 
-  const ring = () => {
-    const now = context.currentTime;
+  const generation = ++webRingtoneGeneration;
 
-    [0, 0.62].forEach((offset) => {
-      playTone(context, {
-        frequency: 740,
-        start: now + offset,
-        duration: 0.46,
-        type: "triangle",
-        volume: 0.3,
-      });
+  const start = () => {
+    if (token !== ringtoneToken || generation !== webRingtoneGeneration) return;
 
-      playTone(context, {
-        frequency: 988,
-        start: now + offset,
-        duration: 0.46,
-        type: "sine",
-        volume: 0.24,
-      });
+    const ring = () => {
+      if (token !== ringtoneToken || generation !== webRingtoneGeneration) return;
+      const now = context.currentTime;
 
-      playTone(context, {
-        frequency: 1480,
-        start: now + offset,
-        duration: 0.46,
-        type: "sine",
-        volume: 0.12,
+      [0, 0.62].forEach((offset) => {
+        playTone(context, {
+          frequency: 740,
+          start: now + offset,
+          duration: 0.46,
+          type: "triangle",
+          volume: 0.3,
+        });
+
+        playTone(context, {
+          frequency: 988,
+          start: now + offset,
+          duration: 0.46,
+          type: "sine",
+          volume: 0.24,
+        });
+
+        playTone(context, {
+          frequency: 1480,
+          start: now + offset,
+          duration: 0.46,
+          type: "sine",
+          volume: 0.12,
+        });
       });
-    });
+    };
+
+    ring();
+    webRingtoneTimer = window.setInterval(ring, 2100);
   };
 
-  ring();
-  webRingtoneTimer = window.setInterval(ring, 2100);
+  if (context.state === "suspended") {
+    context
+      .resume()
+      .then(start)
+      .catch(() => {});
+  } else {
+    start();
+  }
 }
 
 function stopWebAudioRingtone() {
+  webRingtoneGeneration += 1;
   if (webRingtoneTimer) {
     window.clearInterval(webRingtoneTimer);
     webRingtoneTimer = null;
@@ -402,32 +422,106 @@ export function startRingtone() {
 
   const token = ++ringtoneToken;
   const audio = getRingtoneAudio();
+  let webFallbackStarted = false;
+  let playSettled = false;
+  let playSucceeded = false;
+
+  const fallbackToWebAudio = () => {
+    if (token !== ringtoneToken || webFallbackStarted) return;
+    webFallbackStarted = true;
+    // Pause the file element so we don't double-play if it starts later.
+    if (audio) {
+      try {
+        audio.pause();
+      } catch {
+        // Ignore.
+      }
+    }
+    startWebAudioRingtone(token);
+  };
+
+  // Always prepare the synthesized fallback in parallel for cases where the
+  // <audio> element is blocked or fails silently; fallbackToWebAudio() is a no-op
+  // once the file path is clearly playing.
+  const context = getAudioContext();
+  if (context && context.state === "suspended") {
+    context.resume().catch(() => {});
+  }
 
   if (audio) {
     try {
+      audio.loop = true;
       audio.currentTime = 0;
       audio.volume = 1;
 
       const attempt = audio.play();
 
-      if (attempt && typeof attempt.catch === "function") {
-        attempt.catch(() => {
-          // Only fall back if this ring is still the current one.
-          if (token === ringtoneToken) startWebAudioRingtone();
-        });
+      if (attempt && typeof attempt.then === "function") {
+        attempt
+          .then(() => {
+            playSettled = true;
+            playSucceeded = true;
+            // Some browsers resolve play() but don't audibly output (or pause
+            // immediately). If that happens, fall back to synthesized tones.
+            window.setTimeout(() => {
+              if (token !== ringtoneToken || webFallbackStarted) return;
+              if (audio.paused) fallbackToWebAudio();
+            }, 250);
+          })
+          .catch(() => {
+            playSettled = true;
+            playSucceeded = false;
+            fallbackToWebAudio();
+          });
+
+        // If play() never settles, don't leave the user with silence.
+        window.setTimeout(() => {
+          if (token !== ringtoneToken || webFallbackStarted) return;
+          if (!playSettled) {
+            playSettled = true;
+            playSucceeded = false;
+            fallbackToWebAudio();
+          }
+        }, 1500);
+      } else {
+        playSettled = true;
+        playSucceeded = !audio.paused;
+        window.setTimeout(() => {
+          if (token !== ringtoneToken || webFallbackStarted) return;
+          if (!playSucceeded || audio.paused) fallbackToWebAudio();
+        }, 400);
       }
 
-      startVibration();
-      return stopRingtone;
+      // Last-resort fallback if the element claims to be playing but is silent/stuck.
+      window.setTimeout(() => {
+        if (token !== ringtoneToken || webFallbackStarted) return;
+        if (audio.paused || audio.ended) fallbackToWebAudio();
+      }, 3000);
     } catch {
-      // Fall through to Web Audio.
+      playSettled = true;
+      playSucceeded = false;
+      fallbackToWebAudio();
     }
+  } else {
+    fallbackToWebAudio();
   }
 
-  startWebAudioRingtone();
   startVibration();
-
   return stopRingtone;
+}
+
+export function isRingtonePlaying() {
+  if (typeof window === "undefined") return false;
+
+  if (ringtoneAudio && !ringtoneAudio.paused && !ringtoneAudio.ended) {
+    return true;
+  }
+
+  if (webRingtoneTimer) {
+    return true;
+  }
+
+  return false;
 }
 
 export function stopRingtone() {

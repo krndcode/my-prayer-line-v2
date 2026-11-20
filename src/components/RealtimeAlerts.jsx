@@ -22,6 +22,7 @@ import {
 import { Phone, PhoneOff, Video } from "lucide-react";
 import { auth, db } from "@/lib/firebase";
 import {
+  isRingtonePlaying,
   playNotificationSound,
   setSoundEnabled,
   startRingtone,
@@ -83,12 +84,15 @@ export default function RealtimeAlerts() {
 
   const pathnameRef = useRef(pathname);
   const incomingRef = useRef(null);
-  const seenCallsRef = useRef(new Set());
-  const dismissedCallsRef = useRef(new Set());
+  const seenCallRingRef = useRef(new Map()); // callId -> last handled ringSeq
+  const dismissedCallRingRef = useRef(new Map()); // callId -> ringSeq declined
   const lastPingRef = useRef(0);
   const firstNotificationsRef = useRef(true);
   const ringtoneStopRef = useRef(() => {});
   const ringingParticipantUnsubRef = useRef(null);
+  const ringRetryTimerRef = useRef(null);
+  const pendingRingtoneKickRef = useRef(false);
+  const lastRingtoneKickRef = useRef(0);
 
   useEffect(() => {
     pathnameRef.current = pathname;
@@ -100,6 +104,21 @@ export default function RealtimeAlerts() {
   useEffect(() => {
     function unlock() {
       unlockAudio();
+
+      // If a call arrived before audio was allowed, or playback was blocked,
+      // retry starting the ringtone on user gestures (throttled).
+      if (incomingRef.current && !isRingtonePlaying()) {
+        const now = Date.now();
+        if (now - lastRingtoneKickRef.current > 400) {
+          lastRingtoneKickRef.current = now;
+          try {
+            ringtoneStopRef.current?.();
+            ringtoneStopRef.current = startRingtone();
+          } catch {
+            // Other retry paths may still succeed.
+          }
+        }
+      }
     }
 
     function handleVisibilityChange() {
@@ -110,6 +129,8 @@ export default function RealtimeAlerts() {
       // Mobile browsers pause timers while the page is hidden. If a call is
       // still ringing when the user comes back, start the ringtone again.
       if (incomingRef.current) {
+        pendingRingtoneKickRef.current = false;
+        lastRingtoneKickRef.current = Date.now();
         ringtoneStopRef.current?.();
         ringtoneStopRef.current = startRingtone();
       }
@@ -130,12 +151,18 @@ export default function RealtimeAlerts() {
     };
   }, []);
 
-  const clearIncomingCall = useCallback(() => {
+  const clearIncomingCall = useCallback((keepPendingKick = false) => {
     if (ringingParticipantUnsubRef.current) {
       ringingParticipantUnsubRef.current();
       ringingParticipantUnsubRef.current = null;
     }
 
+    if (ringRetryTimerRef.current) {
+      window.clearInterval(ringRetryTimerRef.current);
+      ringRetryTimerRef.current = null;
+    }
+
+    if (!keepPendingKick) pendingRingtoneKickRef.current = false;
     ringtoneStopRef.current?.();
     ringtoneStopRef.current = () => {};
     stopRingtone();
@@ -146,11 +173,17 @@ export default function RealtimeAlerts() {
   useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth, (user) => {
       // Reset all per-account alert state as soon as the account changes.
-      seenCallsRef.current = new Set();
-      dismissedCallsRef.current = new Set();
+      seenCallRingRef.current = new Map();
+      dismissedCallRingRef.current = new Map();
+      pendingRingtoneKickRef.current = false;
       firstNotificationsRef.current = true;
       ringtoneStopRef.current?.();
       ringtoneStopRef.current = () => {};
+
+      if (ringRetryTimerRef.current) {
+        window.clearInterval(ringRetryTimerRef.current);
+        ringRetryTimerRef.current = null;
+      }
 
       if (ringingParticipantUnsubRef.current) {
         ringingParticipantUnsubRef.current();
@@ -254,26 +287,67 @@ export default function RealtimeAlerts() {
     const unsubscribers = [];
     const groupNames = new Map(groups.map((group) => [group.id, group.name]));
 
-    function considerCall(call, groupId) {
-      if (!call || call.status !== "active") return;
-      if (isLocallyActiveCall(groupId, call.id)) return;
-      if (seenCallsRef.current.has(call.id)) return;
-
-      seenCallsRef.current.add(call.id);
-
-      if (dismissedCallsRef.current.has(call.id)) return;
-      if (incomingRef.current) return;
-
+    function beginRinging(call, groupId, ringSeq) {
       const nextCall = {
         id: call.id,
         groupId,
         groupName: call.groupName || groupNames.get(groupId) || "Prayer group",
         type: call.type === "audio" ? "audio" : "video",
+        ringSeq,
       };
 
       incomingRef.current = nextCall;
       setIncomingCall(nextCall);
-      ringtoneStopRef.current = startRingtone();
+      pendingRingtoneKickRef.current = true;
+      lastRingtoneKickRef.current = Date.now();
+
+      const playRing = ({ force = false } = {}) => {
+        try {
+          unlockAudio();
+        } catch {
+          // Best effort: browsers may still require a user gesture.
+        }
+
+        if (!force && isRingtonePlaying()) return;
+
+        try {
+          ringtoneStopRef.current?.();
+          ringtoneStopRef.current = startRingtone();
+        } catch {
+          // User gesture/visibility handlers may still recover audio.
+        }
+      };
+
+      playRing({ force: true });
+
+      // If audio is still blocked (common until the first gesture), keep trying
+      // so the ring starts as soon as the browser allows it.
+      if (typeof window !== "undefined") {
+        if (ringRetryTimerRef.current) {
+          window.clearInterval(ringRetryTimerRef.current);
+          ringRetryTimerRef.current = null;
+        }
+
+        let attempts = 0;
+        ringRetryTimerRef.current = window.setInterval(() => {
+          attempts += 1;
+          const current = incomingRef.current;
+          if (!current || current.id !== call.id || Number(current.ringSeq || 0) !== ringSeq) {
+            if (ringRetryTimerRef.current) {
+              window.clearInterval(ringRetryTimerRef.current);
+              ringRetryTimerRef.current = null;
+            }
+            return;
+          }
+
+          playRing();
+
+          if (isRingtonePlaying() || attempts >= 24) {
+            window.clearInterval(ringRetryTimerRef.current);
+            ringRetryTimerRef.current = null;
+          }
+        }, 1500);
+      }
 
       // If this account joins the call on any device (or in another tab), the
       // participant document appears and this tab should stop ringing too.
@@ -292,6 +366,48 @@ export default function RealtimeAlerts() {
       );
     }
 
+    function considerCall(call, groupId, { initial } = {}) {
+      if (!call || call.status !== "active") return;
+      if (isLocallyActiveCall(groupId, call.id)) return;
+
+      const ringSeq = Number(call.ringSeq || 0);
+      const lastHandled = seenCallRingRef.current.get(call.id);
+      const isNewRing = typeof lastHandled === "number" && ringSeq > lastHandled;
+      const isNewCall = typeof lastHandled !== "number";
+
+      // On the first snapshot we record existing calls without ringing, so a
+      // page refresh doesn't replay old calls. A later ringSeq bump still rings.
+      if (initial) {
+        if (isNewCall) seenCallRingRef.current.set(call.id, ringSeq);
+        return;
+      }
+
+      if (!isNewCall && !isNewRing) return;
+
+      // Ignore a ring triggered by this same signed-in account (bell pressed on
+      // another device/tab). This also prevents self-ringing on the initial call.
+      if (call.ringBy && call.ringBy === uid) {
+        seenCallRingRef.current.set(call.id, ringSeq);
+        return;
+      }
+
+      seenCallRingRef.current.set(call.id, ringSeq);
+
+      // "Ring again" clears a previous decline for that call.
+      if (isNewRing) {
+        dismissedCallRingRef.current.delete(call.id);
+      } else if (dismissedCallRingRef.current.get(call.id) === ringSeq) {
+        return;
+      }
+
+      // Never override the ringtone for a different incoming call; the next ring
+      // will be picked up if the user declines or the other call ends.
+      const current = incomingRef.current;
+      if (current && current.id !== call.id) return;
+
+      beginRinging(call, groupId, ringSeq);
+    }
+
     groups.slice(0, MAX_GROUP_LISTENERS).forEach((group) => {
       let isFirstSnapshot = true;
 
@@ -307,14 +423,16 @@ export default function RealtimeAlerts() {
           }));
 
           if (isFirstSnapshot) {
+            activeCalls.forEach((call) => considerCall(call, group.id, { initial: true }));
             isFirstSnapshot = false;
           } else {
             snapshot.docChanges().forEach((change) => {
-              if (change.type !== "added") return;
+              if (change.type === "removed") return;
 
               considerCall(
                 { id: change.doc.id, ...change.doc.data() },
-                group.id
+                group.id,
+                { initial: false }
               );
             });
           }
@@ -326,6 +444,8 @@ export default function RealtimeAlerts() {
             current.groupId === group.id &&
             !activeCalls.some((call) => call.id === current.id)
           ) {
+            seenCallRingRef.current.delete(current.id);
+            dismissedCallRingRef.current.delete(current.id);
             clearIncomingCall();
           }
         },
@@ -358,10 +478,15 @@ export default function RealtimeAlerts() {
 
   useEffect(
     () => () => {
+      if (ringRetryTimerRef.current) {
+        window.clearInterval(ringRetryTimerRef.current);
+        ringRetryTimerRef.current = null;
+      }
       if (ringingParticipantUnsubRef.current) {
         ringingParticipantUnsubRef.current();
         ringingParticipantUnsubRef.current = null;
       }
+      ringtoneStopRef.current?.();
       stopRingtone();
     },
     []
@@ -373,6 +498,8 @@ export default function RealtimeAlerts() {
 
     const groupPath = `/prayer-space/${current.groupId}`;
 
+    // Stop ringing immediately on this user gesture.
+    unlockAudio();
     clearIncomingCall();
 
     if (pathnameRef.current === groupPath) {
@@ -391,9 +518,12 @@ export default function RealtimeAlerts() {
   function handleDecline() {
     const current = incomingRef.current;
 
+    unlockAudio();
+
     if (current) {
-      dismissedCallsRef.current.add(current.id);
-      seenCallsRef.current.add(current.id);
+      // Dismiss this ring attempt only; a later "ring again" (higher ringSeq)
+      // should ring this device again.
+      dismissedCallRingRef.current.set(current.id, Number(current.ringSeq || 0));
     }
 
     clearIncomingCall();
@@ -409,6 +539,7 @@ export default function RealtimeAlerts() {
       <div
         role="alert"
         aria-live="assertive"
+        onPointerDown={unlockAudio}
         className="pointer-events-auto w-full max-w-sm overflow-hidden rounded-2xl border border-[#cfe8dd] bg-white shadow-2xl"
       >
         <div className="flex items-center gap-3 bg-[#064e3b] px-4 py-3 text-white">
@@ -425,6 +556,9 @@ export default function RealtimeAlerts() {
             </p>
             <p className="truncate text-sm font-semibold">
               {incomingCall.groupName}
+            </p>
+            <p className="truncate text-[11px] text-emerald-100/90">
+              Tap Join to enter, or tap anywhere if you don&apos;t hear sound
             </p>
           </div>
 

@@ -121,3 +121,11 @@ export function setLiveKitCallType({ groupId, callId, callType }) {
     callType,
   });
 }
+
+export function ringLiveKitCall({ groupId, callId }) {
+  return postJson("/api/livekit/call", {
+    groupId,
+    callId,
+    action: "ring",
+  });
+}

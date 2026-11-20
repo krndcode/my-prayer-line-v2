@@ -13,6 +13,7 @@ import {
 } from "@livekit/components-react";
 import { ConnectionState, RoomEvent, Track } from "livekit-client";
 import {
+  BellRing,
   Check,
   LoaderCircle,
   Mic,
@@ -28,7 +29,7 @@ import {
   X,
 } from "lucide-react";
 
-import { getCallErrorMessage } from "@/lib/livekit-client";
+import { getCallErrorMessage, ringLiveKitCall } from "@/lib/livekit-client";
 import { resumeAudio, setCallAudioActive } from "@/lib/sound";
 import "@livekit/components-styles";
 
@@ -246,7 +247,7 @@ function DeviceMenu({ room, onClose, onError }) {
   );
 }
 
-function CallStage({ groupName, callType, displayName, onLeave, onNotice }) {
+function CallStage({ groupId, callId, groupName, callType, displayName, onLeave, onNotice }) {
   const room = useRoomContext();
   const {
     localParticipant,
@@ -266,7 +267,9 @@ function CallStage({ groupName, callType, displayName, onLeave, onNotice }) {
   const [busy, setBusy] = useState(false);
   const [cameraCount, setCameraCount] = useState(0);
   const [leaving, setLeaving] = useState(false);
+  const [ringingMembers, setRingingMembers] = useState(false);
   const leavingRef = useRef(false);
+  const lastRingAtRef = useRef(0);
   const previousCallTypeRef = useRef(callType);
 
   const allParticipants = useMemo(
@@ -400,20 +403,56 @@ function CallStage({ groupName, callType, displayName, onLeave, onNotice }) {
       const devices = (await navigator.mediaDevices.enumerateDevices()).filter(
         (device) => device.kind === "videoinput"
       );
-      const currentId = cameraTrack?.track?.getSettings?.()?.deviceId;
-      const next = devices.find((device) => device.deviceId && device.deviceId !== currentId);
-      if (!next) {
+      if (devices.length < 2) {
         onNotice("No other camera was found on this device.");
         return;
       }
-      const changed = await room.switchActiveDevice("videoinput", next.deviceId);
+
+      const currentId =
+        cameraTrack?.track?.getSettings?.()?.deviceId ||
+        cameraTrack?.publication?.track?.getSettings?.()?.deviceId ||
+        room.getActiveDevice?.("videoinput") ||
+        localParticipant.getTrackPublication?.(Track.Source.Camera)?.track?.getSettings?.()
+          ?.deviceId ||
+        "";
+
+      const currentIndex = devices.findIndex(
+        (device) => device.deviceId && device.deviceId === currentId
+      );
+      const next =
+        currentIndex >= 0
+          ? devices[(currentIndex + 1) % devices.length]
+          : devices.find((device) => device.deviceId && device.deviceId !== currentId) || devices[0];
+
+      if (!next?.deviceId) {
+        onNotice("Unable to switch cameras on this device.");
+        return;
+      }
+
+      let changed = false;
+      try {
+        changed = await room.switchActiveDevice("videoinput", next.deviceId);
+      } catch {
+        changed = false;
+      }
+
+      // Fallback: restart the published camera track with the selected device.
+      if (!changed) {
+        const publication = localParticipant.getTrackPublication?.(Track.Source.Camera);
+        const track = publication?.track || cameraTrack?.track;
+        if (track?.restartTrack) {
+          await track.restartTrack({ deviceId: { exact: next.deviceId } });
+          changed = true;
+        }
+      }
+
       if (!changed) onNotice("Unable to switch cameras on this device.");
     } catch (error) {
       onNotice(getMediaErrorMessage(error, "video"));
     } finally {
       setBusy(false);
     }
-  }, [busy, cameraTrack, onNotice, room]);
+  }, [busy, cameraTrack, localParticipant, onNotice, room]);
 
   const handleLeave = useCallback(async () => {
     if (leavingRef.current) return;
@@ -426,6 +465,26 @@ function CallStage({ groupName, callType, displayName, onLeave, onNotice }) {
     }
     onLeave();
   }, [onLeave, room]);
+
+  const ringMembers = useCallback(async () => {
+    if (!groupId || !callId || ringingMembers) return;
+    const now = Date.now();
+    if (now - lastRingAtRef.current < 4000) {
+      onNotice("Please wait a moment before ringing again.");
+      return;
+    }
+    lastRingAtRef.current = now;
+    setRingingMembers(true);
+    try {
+      await ringLiveKitCall({ groupId, callId });
+      onNotice("Ringing members who aren't in the call.");
+    } catch (error) {
+      lastRingAtRef.current = 0;
+      onNotice(getCallErrorMessage(error));
+    } finally {
+      window.setTimeout(() => setRingingMembers(false), 1200);
+    }
+  }, [groupId, callId, ringingMembers, onNotice]);
 
   const connection = getConnectionLabel(connectionState);
   const elapsedLabel = `${String(Math.floor(elapsed / 60)).padStart(2, "0")}:${String(
@@ -441,25 +500,28 @@ function CallStage({ groupName, callType, displayName, onLeave, onNotice }) {
   const isVideo = callType === "video";
 
   return (
-    <div className="fixed inset-0 z-[120] flex flex-col overflow-hidden bg-[#0a100e] text-white">
+    <div className="fixed inset-0 z-[120] flex flex-col overflow-hidden bg-[#0a100e] text-white supports-[height:100dvh]:h-[100dvh]">
       {connectionState === ConnectionState.Reconnecting && (
-        <div className="absolute inset-x-0 top-0 z-40 flex items-center justify-center gap-2 bg-amber-500 px-4 py-2 text-xs font-bold text-[#3a2600]">
+        <div className="absolute inset-x-0 top-0 z-40 flex items-center justify-center gap-2 bg-amber-500 px-4 py-2 text-center text-xs font-bold text-[#3a2600]">
           <RefreshCw size={14} className="animate-spin" /> Reconnecting to the prayer call…
         </div>
       )}
 
-      <header className="pointer-events-none absolute inset-x-0 top-0 z-20 flex items-start justify-between gap-3 bg-gradient-to-b from-black/85 via-black/40 to-transparent px-4 pb-14 pt-4 sm:px-6">
-        <div className="min-w-0">
+      <header className="pointer-events-none absolute inset-x-0 top-0 z-20 flex items-start justify-between gap-2 bg-gradient-to-b from-black/85 via-black/40 to-transparent px-3 pb-14 pt-[max(0.75rem,env(safe-area-inset-top))] sm:gap-3 sm:px-6">
+        <div className="min-w-0 flex-1">
           <p className="truncate text-sm font-semibold sm:text-base">{groupName}</p>
-          <p className="mt-0.5 flex items-center gap-1.5 text-xs text-white/60">
-            <span className={`h-1.5 w-1.5 rounded-full ${
+          <p className="mt-0.5 flex flex-wrap items-center gap-x-1.5 gap-y-0.5 text-[11px] text-white/70 sm:text-xs">
+            <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${
               connection.tone === "green"
                 ? "bg-emerald-400"
                 : connection.tone === "amber"
                   ? "bg-amber-400"
                   : "bg-red-500"
             }`} />
-            {isVideo ? "Video" : "Voice"} prayer call · {connection.text} ·{" "}
+            <span>{isVideo ? "Video" : "Voice"} prayer call</span>
+            <span className="text-white/40">·</span>
+            <span>{connection.text}</span>
+            <span className="text-white/40">·</span>
             <span className="tabular-nums">{elapsedLabel}</span>
           </p>
         </div>
@@ -467,11 +529,11 @@ function CallStage({ groupName, callType, displayName, onLeave, onNotice }) {
           type="button"
           onClick={() => setShowParticipants((visible) => !visible)}
           aria-label="Toggle participant list"
-          className={`pointer-events-auto flex h-10 items-center gap-2 rounded-full px-3 text-sm backdrop-blur transition ${
+          className={`pointer-events-auto flex h-9 shrink-0 items-center gap-1.5 rounded-full px-2.5 text-sm backdrop-blur transition sm:h-10 sm:gap-2 sm:px-3 ${
             showParticipants ? "bg-white/25" : "bg-black/45 hover:bg-black/60"
           }`}
         >
-          <Users size={17} />
+          <Users size={16} />
           <span>{allParticipants.length}</span>
         </button>
       </header>
@@ -586,17 +648,18 @@ function CallStage({ groupName, callType, displayName, onLeave, onNotice }) {
         )}
       </main>
 
-      <footer className="absolute inset-x-0 bottom-0 z-20 flex items-center justify-center gap-2 bg-gradient-to-t from-black/90 via-black/55 to-transparent px-3 pb-6 pt-14 sm:gap-3">
+      <footer className="absolute inset-x-0 bottom-0 z-20 flex flex-wrap items-center justify-center gap-1.5 bg-gradient-to-t from-black/90 via-black/55 to-transparent px-2 pb-[max(1.25rem,env(safe-area-inset-bottom))] pt-16 sm:gap-3 sm:px-4">
         <button
           type="button"
           onClick={toggleMicrophone}
           disabled={busy}
           aria-label={isMicrophoneEnabled ? "Mute microphone" : "Unmute microphone"}
-          className={`flex h-12 w-12 items-center justify-center rounded-full transition disabled:opacity-60 ${
+          title={isMicrophoneEnabled ? "Mute" : "Unmute"}
+          className={`flex h-11 w-11 items-center justify-center rounded-full transition disabled:opacity-60 sm:h-12 sm:w-12 ${
             isMicrophoneEnabled ? "bg-white/15 hover:bg-white/25" : "bg-red-500 text-white"
           }`}
         >
-          {isMicrophoneEnabled ? <Mic size={19} /> : <MicOff size={19} />}
+          {isMicrophoneEnabled ? <Mic size={18} /> : <MicOff size={18} />}
         </button>
 
         {isVideo && (
@@ -606,11 +669,12 @@ function CallStage({ groupName, callType, displayName, onLeave, onNotice }) {
               onClick={toggleCamera}
               disabled={busy}
               aria-label={isCameraEnabled ? "Turn camera off" : "Turn camera on"}
-              className={`flex h-12 w-12 items-center justify-center rounded-full transition disabled:opacity-60 ${
+              title={isCameraEnabled ? "Camera off" : "Camera on"}
+              className={`flex h-11 w-11 items-center justify-center rounded-full transition disabled:opacity-60 sm:h-12 sm:w-12 ${
                 isCameraEnabled ? "bg-white/15 hover:bg-white/25" : "bg-red-500 text-white"
               }`}
             >
-              {isCameraEnabled ? <Video size={19} /> : <VideoOff size={19} />}
+              {isCameraEnabled ? <Video size={18} /> : <VideoOff size={18} />}
             </button>
 
             {cameraCount > 1 && (
@@ -620,13 +684,24 @@ function CallStage({ groupName, callType, displayName, onLeave, onNotice }) {
                 disabled={busy}
                 aria-label="Switch camera"
                 title="Switch camera"
-                className="flex h-12 w-12 items-center justify-center rounded-full bg-white/15 transition hover:bg-white/25 disabled:opacity-60"
+                className="flex h-11 w-11 items-center justify-center rounded-full bg-white/15 transition hover:bg-white/25 disabled:opacity-60 sm:h-12 sm:w-12"
               >
-                <RefreshCw size={18} />
+                <RefreshCw size={17} />
               </button>
             )}
           </>
         )}
+
+        <button
+          type="button"
+          onClick={ringMembers}
+          disabled={ringingMembers}
+          aria-label="Ring members not in the call"
+          title="Ring members not in the call"
+          className="flex h-11 w-11 items-center justify-center rounded-full bg-white/15 transition hover:bg-white/25 disabled:opacity-60 sm:h-12 sm:w-12"
+        >
+          <BellRing size={18} className={ringingMembers ? "animate-pulse" : ""} />
+        </button>
 
         <div className="relative">
           <button
@@ -634,11 +709,11 @@ function CallStage({ groupName, callType, displayName, onLeave, onNotice }) {
             onClick={() => setShowDevices((visible) => !visible)}
             aria-label="Audio device settings"
             title="Audio devices"
-            className={`flex h-12 w-12 items-center justify-center rounded-full transition ${
+            className={`flex h-11 w-11 items-center justify-center rounded-full transition sm:h-12 sm:w-12 ${
               showDevices ? "bg-white/25" : "bg-white/15 hover:bg-white/25"
             }`}
           >
-            <Settings2 size={19} />
+            <Settings2 size={18} />
           </button>
           {showDevices && (
             <DeviceMenu room={room} onClose={() => setShowDevices(false)} onError={onNotice} />
@@ -650,7 +725,8 @@ function CallStage({ groupName, callType, displayName, onLeave, onNotice }) {
           onClick={handleLeave}
           disabled={leaving}
           aria-label="Leave call"
-          className="ml-1 flex h-12 w-14 items-center justify-center rounded-full bg-red-600 text-white transition hover:bg-red-700 disabled:opacity-60 sm:w-16"
+          title="Leave call"
+          className="ml-0.5 flex h-11 w-14 items-center justify-center rounded-full bg-red-600 text-white transition hover:bg-red-700 disabled:opacity-60 sm:ml-1 sm:h-12 sm:w-16"
         >
           {leaving ? <LoaderCircle size={20} className="animate-spin" /> : <PhoneOff size={20} />}
         </button>
@@ -662,6 +738,8 @@ function CallStage({ groupName, callType, displayName, onLeave, onNotice }) {
 export default function LiveKitCall({
   serverUrl,
   token,
+  groupId,
+  callId,
   groupName,
   callType,
   displayName,
@@ -708,7 +786,7 @@ export default function LiveKitCall({
       {notice && (
         <div
           role="alert"
-          className="fixed bottom-24 left-1/2 z-[140] flex w-[min(24rem,calc(100vw-2rem))] -translate-x-1/2 items-start gap-2 rounded-xl border border-white/15 bg-[#1c2a24]/95 p-3 text-xs text-white shadow-2xl backdrop-blur"
+          className="fixed bottom-[calc(6.5rem+env(safe-area-inset-bottom))] left-1/2 z-[140] flex w-[min(24rem,calc(100vw-1.5rem))] -translate-x-1/2 items-start gap-2 rounded-xl border border-white/15 bg-[#1c2a24]/95 p-3 text-xs text-white shadow-2xl backdrop-blur"
         >
           <span className="flex-1">{notice}</span>
           <button
@@ -736,6 +814,8 @@ export default function LiveKitCall({
       >
         <RoomAudioRenderer />
         <CallStage
+          groupId={groupId}
+          callId={callId}
           groupName={groupName}
           callType={callType}
           displayName={displayName}

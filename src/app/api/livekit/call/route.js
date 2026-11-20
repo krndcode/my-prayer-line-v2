@@ -41,8 +41,9 @@ export async function POST(request) {
     const { groupId, callId, action, callType, participantIdentity } = body || {};
     const isEnd = action === "end";
     const isSetType = action === "set-type";
+    const isRing = action === "ring";
 
-    if (!isValidGroupId(groupId) || !isValidCallId(callId) || (!isEnd && !isSetType)) {
+    if (!isValidGroupId(groupId) || !isValidCallId(callId) || (!isEnd && !isSetType && !isRing)) {
       throw new ApiError("invalid_request", 400, "The call request was invalid. Please try again.");
     }
 
@@ -91,6 +92,20 @@ export async function POST(request) {
       const ended = remaining.length === 0 ? await markCallEnded(callRef) : false;
       return Response.json(
         { ended },
+        { headers: { "Cache-Control": "no-store" } }
+      );
+    }
+
+    if (isRing) {
+      await callRef.update({
+        ringSeq: FieldValue.increment(1),
+        ringAt: FieldValue.serverTimestamp(),
+        ringBy: decoded.uid,
+        updatedAt: FieldValue.serverTimestamp(),
+      });
+
+      return Response.json(
+        { ok: true },
         { headers: { "Cache-Control": "no-store" } }
       );
     }
